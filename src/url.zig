@@ -315,7 +315,7 @@ pub const Values = struct {
 
     // init
     pub fn init(allocator: Allocator) Values {
-        var data = StringHashMap([][]const u8).init(allocator);
+        const data = StringHashMap([][]const u8).init(allocator);
 
         return .{
             .data = data,
@@ -431,7 +431,7 @@ pub const Values = struct {
 // value.
 // Settings containing a non-URL-encoded semicolon are considered invalid.
 pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
-    var m = Values.init(allocator);
+    const m = Values.init(allocator);
 
     try parseQuerys(m, query);
 
@@ -557,7 +557,7 @@ pub const URL = struct {
             return;
         }
         const ctx = try countUneEscape(frag.y.?, encoding.path);
-        var f = try a.alloc(u8, ctx.buffer_size);
+        const f = try a.alloc(u8, ctx.buffer_size);
         unescape(f, ctx, frag.y.?, encoding.path);
         uri.fragment = f;
     }
@@ -630,7 +630,7 @@ pub const URL = struct {
     // It silently discards malformed value pairs.
     // To check errors use parseQuery.
     pub fn query(uri: *URL, a: Allocator) !Values {
-        var v = try parseQuery(a, uri.raw_query);
+        const v = try parseQuery(a, uri.raw_query);
 
         return v;
     }
@@ -738,11 +738,11 @@ pub const URL = struct {
         }
         const s = split(user_info, ":", true);
         var ctx = try countUneEscape(s.x, encoding.userPassword);
-        var username = try allocator.alloc(u8, ctx.buffer_size);
+        const username = try allocator.alloc(u8, ctx.buffer_size);
         unescape(username, ctx, s.x, encoding.userPassword);
         if (s.y) |y| {
             ctx = try countUneEscape(y, encoding.userPassword);
-            var password = try allocator.alloc(u8, ctx.buffer_size);
+            const password = try allocator.alloc(u8, ctx.buffer_size);
             unescape(password, ctx, y, encoding.userPassword);
             res.user = UserInfo.initWithPassword(username, password);
         } else {
@@ -784,7 +784,7 @@ pub const URL = struct {
             }
         }
         const ctx = try countUneEscape(host, encoding.host);
-        var out = try a.alloc(u8, ctx.buffer_size);
+        const out = try a.alloc(u8, ctx.buffer_size);
         unescape(out, ctx, host, encoding.host);
         return out;
     }
@@ -900,14 +900,14 @@ pub const URL = struct {
 
 fn setPath(u: *URL, a: *Allocator, path: []const u8) !void {
     const uctx = try countUneEscape(path, encoding.path);
-    var raw_path = try a.alloc(u8, uctx.buffer_size);
+    const raw_path = try a.alloc(u8, uctx.buffer_size);
     unescape(raw_path, uctx, path, encoding.path);
     u.path = raw_path;
     const ectx = countEscape(path, encoding.path);
-    var escaped_path = try a.alloc(u8, ectx.len());
+    const escaped_path = try a.alloc(u8, ectx.len());
     escape(escaped_path, ectx, u.path.?, encoding.path);
     if (!mem.eql(u8, raw_path, escaped_path)) {
-        var e = try a.alloc(u8, path.len);
+        const e = try a.alloc(u8, path.len);
         mem.copy(u8, e, path);
         u.raw_path = e;
     }
@@ -1041,7 +1041,7 @@ pub const U = struct {
     }
 
     fn parse(self: *U, raw_url: []const u8) !void {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         self.url = URL{};
         try self.url.parse(a, raw_url);
     }

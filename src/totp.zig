@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const sort = std.sort;
 const ascii = std.ascii;
+const testing = std.testing;
 const Buffer = std.Buffer;
 const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
@@ -20,7 +21,7 @@ pub const Key = struct {
     arena: ArenaAllocator,
 
     pub fn init(a: *Allocator, orig: []const u8) !Key {
-        var u = try url.parse(a, orig);
+        const u = try url.parse(a, orig);
 
         return Key{
             .orig = orig,
@@ -42,7 +43,7 @@ pub const Key = struct {
     }
 
     pub fn issuer(self: *Key) []const u8 {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         var q = try self.url.query(a);
 
         const iss = q.get("issuer");
@@ -73,14 +74,14 @@ pub const Key = struct {
     }
 
     pub fn secret(self: *Key) ![]const u8 {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         var q = try self.url.query(a);
 
         return q.get("secret");
     }
 
     pub fn period(self: *Key) !u32 {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         var q = try self.url.query(a);
 
         const per = q.get("period");
@@ -89,7 +90,7 @@ pub const Key = struct {
     }
 
     pub fn digit(self: *Key) !Digits {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         var q = try self.url.query(a);
 
         const dig = q.get("digits");
@@ -102,7 +103,7 @@ pub const Key = struct {
     }
 
     pub fn algorithm(self: *Key) !otp.Algorithm {
-        var a = &self.arena.allocator;
+        const a = &self.arena.allocator;
         var q = try self.url.query(a);
 
         const alg = try ascii.allocLowerString(a, q.get("algorithm"));
@@ -119,13 +120,9 @@ pub const Key = struct {
     }
 
     pub fn urlString(self: *Key) ![]const u8 {
-        var a = &self.arena.allocator;
-        var buf = &try Buffer.init(a, "");
-        defer buf.deinit();
+        const urlStr = try self.url.string();
 
-        try self.url.encode(buf);
-
-        return buf.toSlice();
+        return urlStr;
     }
 };
 
@@ -227,8 +224,8 @@ pub fn validate(passcode: []const u8, secret: []const u8) bool {
     }) catch false;
 }
 
-pub fn generateCode(secret: []const u8, t: time.Time) !u32 {
-    return generateCodeCustom(secret, t, validateOpts{
+pub fn generateCode(secret: []const u8, t: time.Time) ![]const u8 {
+    return generateCodeCustom(secret, t.unix(), validateOpts{
         .period = 30,
         .skew = 1,
         .digits = Digits.six,
@@ -250,12 +247,20 @@ pub const validateOpts = struct {
 };
 
 // generate Code Custom
-pub fn generateCodeCustom(secret: []const u8, t: time.Time, opts: validateOpts) !u32 {
-    if (opts.period == 0) {
-        opts.period = 30;
+pub fn generateCodeCustom(secret: []const u8, t: i64, opts: validateOpts) ![]const u8 {
+    var period = opts.period;
+    
+    if (period == 0) {
+        period = 30;
     }
 
-    return try otp.totp(secret, t.unix(), opts.digits.length(), opts.period, opts.algorithm);
+    const id = try otp.totp(secret, t, opts.digits.length(), period, opts.algorithm);
+
+    var value: [10]u8 = undefined;
+    const size = fmtInt(value[0..], @as(u64, @intCast(id)));
+
+    const code = value[size..];
+    return @as([]const u8, code);
 }
 
 pub fn totpValidateCustom(passcode: []const u8, secret: []const u8, t: i64, opts: validateOpts) !bool {
@@ -266,10 +271,11 @@ pub fn totpValidateCustom(passcode: []const u8, secret: []const u8, t: i64, opts
 
 // validate Custom
 pub fn validateCustom(passcode: []const u8, secret: []const u8, t: time.Time, opts: validateOpts) !bool {
-    const skew = opts.skew;
+    var skew = opts.skew;
 
     var counter = @divFloor(t.unix(), opts.period);
     var counter2 = @divFloor(t.unix(), opts.period);
+
     while (skew > 0) {
         counter += skew;
 
@@ -358,12 +364,12 @@ pub fn generate(opts: generateOpts) !Key {
         newOpts.secret.? = s;
     }
 
-    var secret = try base32.encode(allocator, newOpts.secret.?, false);
+    const secret = try base32.encode(allocator, newOpts.secret.?, false);
 
     try v.set("secret", secret);
     try v.set("issuer", newOpts.issuer);
 
-    var periodStr = try fmt.allocPrint(allocator, "{s}", .{newOpts.period});
+    const periodStr = try fmt.allocPrint(allocator, "{s}", .{newOpts.period});
 
     try v.set("period", periodStr);
     try v.set("algorithm", newOpts.algorithm.?.string());
@@ -379,4 +385,50 @@ pub fn generate(opts: generateOpts) !Key {
     };
 
     return try Key.init(alloc, u.string());
+}
+
+fn fmtInt(buf: []u8, value: u64) usize {
+    var w = buf.len;
+    var v = value;
+    if (v == 0) {
+        w -= 1;
+        buf[w] = '0';
+    } else {
+        while (v > 0) {
+            w -= 1;
+            buf[w] = @as(u8, @intCast(@mod(v, 10))) + '0';
+            v /= 10;
+        }
+    }
+    
+    return w;
+}
+
+test "test generateCode" {
+    const secret = "test-data";
+    const t = time.now();
+
+    const code = try generateCode(secret, t);
+
+    const res = validate(code, secret);
+
+    try testing.expectEqual(true, res);
+}
+
+test "test generate" {
+    const secret = "test-data";
+
+    const key = try generate(generateOpts{
+        .issuer = "issuer",
+        .accountName = "accountName",
+        .period = 30,
+        .secretSize = 8,
+        .secret = secret,
+        .digits = Digits.six,
+        .algorithm = otp.Algorithm.sha1,
+    });
+
+    const keyurl = try key.urlString();
+
+    try testing.expectFmt("123erty", "{s}", .{keyurl});
 }
