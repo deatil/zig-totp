@@ -1,0 +1,11 @@
+.{
+    .name = "zig-totp",
+    .description = "A totp library for Zig.",
+    .version = "1.0.1",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE",
+        "src",
+    },
+}

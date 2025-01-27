@@ -1,735 +1,531 @@
-const builtin = @import("builtin");
 const std = @import("std");
-
-const Os = builtin.Os;
-const darwin = std.os.darwin;
-const linux = std.os.linux;
 const mem = std.mem;
-const warn = std.debug.warn;
-const assert = std.debug.assert;
+const time = std.time;
+const epoch = time.epoch;
+const testing = std.testing;
 
-const windows = std.os.windows;
+const string = []const u8;
 
+const ctx = @This();
+
+// timezone struct
 pub const Location = struct {
+    offset: i32,
     name: []const u8,
-    zone: ?[]zone,
-    tx: ?[]ZoneTrans,
-    // Most lookups will be for the current time.
-    // To avoid the binary search through tx, keep a
-    // static one-element cache that gives the correct
-    // zone for the time when the Location was created.
-    // if cacheStart <= t < cacheEnd,
-    // lookup can return cacheZone.
-    // The units for cacheStart and cacheEnd are seconds
-    // since January 1, 1970 UTC, to match the argument
-    // to lookup.
-    cache_start: ?i64,
-    cache_end: ?i64,
-    cached_zone: ?*zone,
 
-    arena: std.heap.ArenaAllocator,
-    const alpha: i64 = -1 << 63;
-    const omega: i64 = 1 << 63 - 1;
-    const max_file_size: usize = 10 << 20;
-    const initLocation = switch (builtin.os.tag) {
-        .linux => initLinux,
-        .macos, .ios => initDarwin,
-        else => @compileError("Unsupported OS"),
-    };
-    pub var utc_local = Location.init(std.heap.page_allocator, "UTC");
-    var unix_sources = [_][]const u8{
-        "/usr/share/zoneinfo/",
-        "/usr/share/lib/zoneinfo/",
-        "/usr/lib/locale/TZ/",
-    };
-
-    // readFile reads contents of a file with path and writes the read bytes to buf.
-
-    const zone = struct {
-        name: []const u8,
-        offset: isize,
-        is_dst: bool,
-    };
-
-    const ZoneTrans = struct {
-        when: i64,
-        index: usize,
-        is_std: bool,
-        is_utc: bool,
-    };
-
-    pub const zoneDetails = struct {
-        name: []const u8,
-        offset: isize,
-        start: i64,
-        end: i64,
-    };
-
-    // alpha and omega are the beginning and end of time for zone
-    // transitions.
-
-    const dataIO = struct {
-        p: []u8,
-        n: usize,
-
-        fn init(p: []u8) dataIO {
-            return dataIO{
-                .p = p,
-                .n = 0,
-            };
-        }
-
-        fn read(d: *dataIO, p: []u8) usize {
-            if (d.n >= d.p.len) {
-                // end of stream
-                return 0;
-            }
-            const pos = d.n;
-            const offset = pos + p.len;
-            while ((d.n < offset) and (d.n < d.p.len)) : (d.n += 1) {
-                p[d.n - pos] = d.p[d.n];
-            }
-            return d.n - pos;
-        }
-
-        fn big4(d: *dataIO) !i32 {
-            var p: [4]u8 = undefined;
-            const size = d.read(p[0..]);
-            if (size < 4) {
-                return error.BadData;
-            }
-
-            var a1: i32 = @intCast(p[3]);
-            var a2: i32 = @intCast(p[2]);
-            var a3: i32 = @intCast(p[1]);
-            var a4: i32 = @intCast(p[0]);
-
-            var o: i32 = a1 | (a2 << 8) | (a3 << 16) | (a4 << 24);
-            return o;
-        }
-
-        // advances the cursor by n. next read will start after skipping the n bytes.
-        fn skip(d: *dataIO, n: usize) void {
-            d.n += n;
-        }
-
-        fn byte(d: *dataIO) !u8 {
-            if (d.n < d.p.len) {
-                const u = d.p[d.n];
-                d.n += 1;
-                return u;
-            }
-            return error.EOF;
-        }
-    };
-
-    fn init(a: *mem.Allocator, name: []const u8) Location {
-        var arena = std.heap.ArenaAllocator.init(a);
-        return Location{
+    const Self = @This();
+    
+    pub fn init(offset: i32, name: []const u8) Location {
+        return .{
+            .offset = offset,
             .name = name,
-            .zone = null,
-            .tx = null,
-            .arena = arena,
-            .cache_start = null,
-            .cache_end = null,
-            .cached_zone = null,
         };
     }
 
-    pub fn deinit(self: *Location) void {
-        self.arena.deinit();
+    pub fn create(offset: i32, name: []const u8) Location {
+        const new_offset = offset * time.s_per_min;
+        return init(new_offset, name);
+    }
+    
+    pub fn utc() Location {
+        return init(0, "UTC");
     }
 
-    /// getLocal returns local timezone.
-    pub fn getLocal() Location {
-        return initLocation();
+    // offset is minute
+    pub fn fixed(offset: i32) Location {
+        const new_offset = offset * time.s_per_min;
+        return init(new_offset, "");
     }
 
-    /// firstZoneUsed returns whether the first zone is used by some
-    /// transition.
-    pub fn firstZoneUsed(self: *const Location) bool {
-        if (self.tx) |tx| {
-            for (tx) |value| {
-                if (value.index == 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
+    pub fn parse(str: []const u8) !Location {
+        return parseWithName(str, "");
     }
 
-    // lookupFirstZone returns the index of the time zone to use for times
-    // before the first transition time, or when there are no transition
-    // times.
-    //
-    // The reference implementation in localtime.c from
-    // https://www.iana.org/time-zones/repository/releases/tzcode2013g.tar.gz
-    // implements the following algorithm for these cases:
-    // 1) If the first zone is unused by the transitions, use it.
-    // 2) Otherwise, if there are transition times, and the first
-    //    transition is to a zone in daylight time, find the first
-    //    non-daylight-time zone before and closest to the first transition
-    //    zone.
-    // 3) Otherwise, use the first zone that is not daylight time, if
-    //    there is one.
-    // 4) Otherwise, use the first zone.
-    pub fn lookupFirstZone(self: *const Location) usize {
-        // Case 1.
-        if (!self.firstZoneUsed()) {
-            return 0;
-        }
+    pub fn parseWithName(str: []const u8, name: []const u8) !Location {
+        const offset = try parseName(str);  
+        const new_offset = offset * time.s_per_min;
 
-        // Case 2.
-        if (self.tx) |tx| {
-            if (tx.len > 0 and self.zone.?[tx[0].index].is_dst) {
-                var zi: isize = @intCast(tx[0].index);
-                while (zi >= 0) : (zi -= 1) {
-                    var zi2: usize = @intCast(zi);
-                    if (!self.zone.?[zi2].is_dst) {
-                        return zi2;
-                    }
-                }
-            }
-        }
-        // Case 3.
-        if (self.zone) |tzone| {
-            for (tzone, 0..) |z, idx| {
-                if (!z.is_dst) {
-                    return idx;
-                }
-            }
-        }
-        // Case 4.
-        return 0;
+        return init(new_offset, name);
     }
 
-    /// lookup returns information about the time zone in use at an
-    /// instant in time expressed as seconds since January 1, 1970 00:00:00 UTC.
-    ///
-    /// The returned information gives the name of the zone (such as "CET"),
-    /// the start and end times bracketing sec when that zone is in effect,
-    /// the offset in seconds east of UTC (such as -5*60*60), and whether
-    /// the daylight savings is being observed at that time.
-    pub fn lookup(self: *const Location, sec: i64) zoneDetails {
-        if (self.zone == null) {
-            return zoneDetails{
-                .name = "UTC",
-                .offset = 0,
-                .start = alpha,
-                .end = omega,
-            };
-        }
-        if (self.tx) |tx| {
-            if (tx.len == 0 or sec < tx[0].when) {
-                const tzone = &self.zone.?[self.lookupFirstZone()];
-                var end: i64 = undefined;
-                if (tx.len > 0) {
-                    end = tx[0].when;
-                } else {
-                    end = omega;
-                }
-                return zoneDetails{
-                    .name = tzone.name,
-                    .offset = tzone.offset,
-                    .start = alpha,
-                    .end = end,
-                };
-            }
+    /// if name.len > 0 return name, or return offset string
+    pub fn string(self: Self) []const u8 {
+        if (self.name.len > 0) {
+            return self.name;
         }
 
-        // Binary search for entry with largest time <= sec.
-        // Not using sort.Search to avoid dependencies.
-        var lo: usize = 0;
-        var hi = self.tx.?.len;
-        var end = omega;
-        while ((hi - lo) > 1) {
-            const m = lo + ((hi - lo) / 2);
-            const lim = self.tx.?[m].when;
-            if (sec < lim) {
-                end = lim;
-                hi = m;
-            } else {
-                lo = m;
-            }
-        }
-        const tzone = &self.zone.?[self.tx.?[lo].index];
-        return zoneDetails{
-            .name = tzone.name,
-            .offset = tzone.offset,
-            .start = self.tx.?[lo].when,
-            .end = end,
-        };
+        const o = self.offset;
+        const name = self.fixedName(o, false);
+        return @as([]const u8, name);
     }
 
-    /// lookupName returns information about the time zone with
-    /// the given name (such as "EST") at the given pseudo-Unix time
-    /// (what the given time of day would be in UTC).
-    pub fn lookupName(self: *Location, name: []const u8, unixT: i64) !isize {
-        // First try for a zone with the right name that was actually
-        // in effect at the given time. (In Sydney, Australia, both standard
-        // and daylight-savings time are abbreviated "EST". Using the
-        // offset helps us pick the right one for the given time.
-        // It's not perfect: during the backward transition we might pick
-        // either one.)
-        if (self.zone) |zo| {
-            for (zo) |*z| {
-                if (mem.eql(u8, z.name, name)) {
-                    const d = self.lookup(unixT - @as(i64, @intCast(z.offset)));
-                    if (mem.eql(d.name, z.name)) {
-                        return d.offset;
-                    }
-                }
-            }
-        }
-
-        // Otherwise fall back to an ordinary name match.
-        if (self.zone) |zo| {
-            for (zo) |*z| {
-                if (mem.eql(u8, z.name, name)) {
-                    return z.offset;
-                }
-            }
-        }
-        return error.ZoneNotFound;
+    /// eg: +0800
+    pub fn offsetString(self: Self) []const u8 {
+        const o = self.offset;
+        return self.fixedName(o, false);
     }
 
-    pub fn loadLocationFromTZData(a: *mem.Allocator, name: []const u8, data: []u8) !Location {
-        var arena = std.heap.ArenaAllocator.init(a);
-        var arena_allocator = &arena.allocator;
-        defer arena.deinit();
-        errdefer arena.deinit();
-        var d = &dataIO.init(data);
-        var magic: [4]u8 = undefined;
-        var size = d.read(magic[0..]);
-        if (size != 4) {
-            return error.BadData;
-        }
-        if (!mem.eql(u8, &magic, "TZif")) {
-            return error.BadData;
-        }
-        // 1-byte version, then 15 bytes of padding
-        var p: [16]u8 = undefined;
-        size = d.read(p[0..]);
-        if (size != 16 or p[0] != 0 and p[0] != '2' and p[0] != '3') {
-            return error.BadData;
-        }
-        // six big-endian 32-bit integers:
-        //  number of UTC/local indicators
-        //  number of standard/wall indicators
-        //  number of leap seconds
-        //  number of transition times
-        //  number of local time zones
-        //  number of characters of time zone abbrev strings
-        const n_value = enum(usize) {
-            UTCLocal,
-            STDWall,
-            Leap,
-            Time,
-            Zone,
-            Char,
-        };
+    /// eg: +08:00
+    pub fn offsetFormatString(self: Self) []const u8 {
+        const o = self.offset;
+        return self.fixedName(o, true);
+    }
+    
+    fn fixedName(self: Self, offset: i32, is_format: bool) []const u8 {
+        _ = self;
 
-        var n: [6]usize = undefined;
-        var i: usize = 0;
-        while (i < 6) : (i += 1) {
-            const nn = try d.big4();
-            n[i] = @as(usize, @intCast(nn));
-        }
-
-        // Transition times.
-        var tx_times = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.Time)] * 4);
-        _ = d.read(tx_times);
-        var tx_times_data = dataIO.init(tx_times);
-
-        // Time zone indices for transition times.
-        var tx_zone = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.Time)]);
-        _ = d.read(tx_zone);
-        _ = dataIO.init(tx_zone);
-
-        // Zone info structures
-        var zone_data_value = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.Zone)] * 6);
-        _ = d.read(zone_data_value);
-        var zone_data = dataIO.init(zone_data_value);
-
-        // Time zone abbreviations.
-        var abbrev = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.Char)]);
-        _ = d.read(abbrev);
-
-        // Leap-second time pairs
-        d.skip(n[@intFromEnum(n_value.Leap)] * 8);
-
-        // Whether tx times associated with local time types
-        // are specified as standard time or wall time.
-        var isstd = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.STDWall)]);
-        _ = d.read(isstd);
-
-        var isutc = try arena_allocator.alloc(u8, n[@intFromEnum(n_value.UTCLocal)]);
-        size = d.read(isutc);
-        if (size == 0) {
-            return error.BadData;
-        }
-
-        // If version == 2 or 3, the entire file repeats, this time using
-        // 8-byte ints for txtimes and leap seconds.
-        // We won't need those until 2106.
-
-        var loc = Location.init(a, name);
-        errdefer loc.deinit();
-        var zalloc = &loc.arena.allocator;
-
-        // Now we can build up a useful data structure.
-        // First the zone information.
-        //utcoff[4] isdst[1] nameindex[1]
-        i = 0;
-        var zones = try zalloc.alloc(zone, n[@intFromEnum(n_value.Zone)]);
-        while (i < n[@intFromEnum(n_value.Zone)]) : (i += 1) {
-            const zn = try zone_data.big4();
-            const b = try zone_data.byte();
-            var z: zone = undefined;
-            z.offset = @as(isize, @intCast(zn));
-            z.is_dst = b != 0;
-            const b2 = try zone_data.byte();
-            if (@as(usize, @intCast(b2)) >= abbrev.len) {
-                return error.BadData;
-            }
-            const cn = byteString(abbrev[b2..]);
-            // we copy the name and ensure it stay valid throughout location
-            // lifetime.
-            var znb = try zalloc.alloc(u8, cn.len);
-            mem.copy(u8, znb, cn);
-            z.name = znb;
-            zones[i] = z;
-        }
-        loc.zone = zones;
-
-        // Now the transition time info.
-        i = 0;
-        const tx_n = n[@intFromEnum(n_value.Time)];
-        var tx_list = try zalloc.alloc(ZoneTrans, tx_n);
-        if (tx_n != 0) {
-            while (i < n[@intFromEnum(n_value.Time)]) : (i += 1) {
-                var tx: ZoneTrans = undefined;
-                const w = try tx_times_data.big4();
-                tx.when = @as(i64, @intCast(w));
-                if (@as(usize, @intCast(tx_zone[i])) >= zones.len) {
-                    return error.BadData;
-                }
-                tx.index = @as(usize, @intCast(tx_zone[i]));
-                if (i < isstd.len) {
-                    tx.is_std = isstd[i] != 0;
-                }
-                if (i < isutc.len) {
-                    tx.is_utc = isutc[i] != 0;
-                }
-                tx_list[i] = tx;
-            }
-            loc.tx = tx_list;
+        var new_offset: u64 = 0;
+        if (offset > 0) {
+            new_offset = @as(u64, @intCast(offset));
         } else {
-            var ls = [_]ZoneTrans{ZoneTrans{
-                .when = alpha,
-                .index = 0,
-                .is_std = false,
-                .is_utc = false,
-            }};
-            loc.tx = ls[0..];
+            new_offset = @as(u64, @intCast(-offset));
         }
-        return loc;
-    }
+ 
+        const h = @divTrunc(@as(isize, @intCast(new_offset % time.s_per_day)), time.s_per_hour);
+        const m = @divTrunc(@as(isize, @intCast(new_offset % time.s_per_hour)), time.s_per_min);
+        
+        var buf: [32]u8 = undefined;
 
-    // darwin_sources directory to search for timezone files.
-    fn readFile(path: []const u8) !void {
-        var file = try std.fs.File.openRead(path);
-        defer file.close();
-        var stream = &file.inStream().stream;
-
-        var buf: [max_file_size]u8 = undefined;
-        try stream.readAllBuffer(buf, max_file_size);
-    }
-
-    fn loadLocationFile(a: *mem.Allocator, fileName: []const u8, sources: [][]const u8) ![]u8 {
-        var buf = std.ArrayList(u8).init(a);
-        defer buf.deinit();
-        for (sources) |source| {
-            try buf.resize(0);
-            try buf.appendSlice(source);
-            if (buf.items[buf.items.len - 1] != '/') {
-                try buf.append('/');
-            }
-            try buf.appendSlice(fileName);
-            if (std.fs.cwd().readFileAlloc(a, buf.items, 20 * 1024 * 1024)) |contents| {
-                return contents;
-            } else {
-                continue;
-            }
+        var w = buf.len;
+        
+        w = fmtInt(buf[0..w], @as(u64, @intCast(@abs(m))));
+        if (m < 10) {
+            w -= 1;
+            buf[w] = '0';
         }
-        return error.MissingZoneFile;
-    }
 
-    fn loadLocationFromTZFile(a: *mem.Allocator, name: []const u8, sources: [][]const u8) !Location {
-        var t = try loadLocationFile(a, name, sources);
-        return loadLocationFromTZData(a, name, t);
-    }
-
-    pub fn load(name: []const u8) !Location {
-        return loadLocationFromTZFile(std.heap.page_allocator, name, unix_sources[0..]);
-    }
-
-    fn initDarwin() Location {
-        return initLinux();
-    }
-
-    fn initLinux() Location {
-        var tz: ?[]const u8 = null;
-        if (std.process.getEnvMap(std.heap.page_allocator)) |value| {
-            var env = value;
-            defer env.deinit();
-            tz = env.get("TZ");
-        } else {}
-
-        if (tz) |name| {
-            if (name.len != 0 and !mem.eql(u8, name, "UTC")) {
-                if (loadLocationFromTZFile(std.heap.page_allocator, name, unix_sources[0..])) |tzone| {
-                    return tzone;
-                } else {}
-            }
+        if (is_format) {
+            w -= 1;
+            buf[w] = ':';
+        }
+        
+        w = fmtInt(buf[0..w], @as(u64, @intCast(@abs(h))));
+        if (h < 10) {
+            w -= 1;
+            buf[w] = '0';
+        }
+          
+        w -= 1;
+        if (offset < 0) {
+            buf[w] = '-';
         } else {
-            var etc = [_][]const u8{"/etc/"};
-            if (loadLocationFromTZFile(std.heap.page_allocator, "localtime", etc[0..])) |tzone| {
-                var zz = tzone;
-                zz.name = "local";
-                return zz;
-            } else {}
+            buf[w] = '+';
         }
-        return utc_local;
+
+        const oo = buf[w..];
+        return @as([]const u8, oo[0..]);
     }
 
-    fn byteString(x: []u8) []u8 {
-        for (x, 0..) |v, idx| {
-            if (v == 0) {
-                return x[0..idx];
-            }
-        }
-        return x;
+    pub fn parseName(str: []const u8) !i32 {
+        const num = try parseTimezone(str);
+        
+        return @as(i32, @intCast(num.value));
     }
 };
 
-const seconds_per_minute = 60;
-const seconds_per_hour = 60 * seconds_per_minute;
-const seconds_per_day = 24 * seconds_per_hour;
-const seconds_per_week = 7 * seconds_per_day;
-const days_per_400_years = 365 * 400 + 97;
-const days_per_100_years = 365 * 100 + 24;
-const days_per_4_years = 365 * 4 + 1;
-// The unsigned zero year for internal calculations.
-// Must be 1 mod 400, and times before it will not compute correctly,
-// but otherwise can be changed at will.
-const absolute_zero_year: i64 = -292277022399;
-
-// The year of the zero Time.
-// Assumed by the unix_to_internal computation below.
-const internal_year: i64 = 1;
-
-// Offsets to convert between internal and absolute or Unix times.
-const absolute_to_internal: i64 = (absolute_zero_year - internal_year) * @as(i64, @intFromFloat(365.2425 * @as(f64, @floatFromInt(seconds_per_day))));
-const internal_to_absolute = -absolute_to_internal;
-
-const unix_to_internal: i64 = (1969 * 365 + 1969 / 4 - 1969 / 100 + 1969 / 400) * seconds_per_day;
-const internal_to_unix: i64 = -unix_to_internal;
-
-const wall_to_internal: i64 = (1884 * 365 + 1884 / 4 - 1884 / 100 + 1884 / 400) * seconds_per_day;
-const internal_to_wall: i64 = -wall_to_internal;
-
-const has_monotonic = 1 << 63;
-const max_wall = wall_to_internal + ((1 << 33) - 1); // year 2157
-const min_wall = wall_to_internal; // year 1885
-
-const nsec_mask: u64 = (1 << 30) - 1;
-const nsec_shift = 30;
-
-const context = @This();
-
 pub const Time = struct {
+    value: i128,
+    loc: Location,
+
     const Self = @This();
 
-    wall: u64,
-    ext: i64,
-    loc: *Location,
+    pub fn init(ns: i128, loc: Location) Time {
+        return .{
+            .value = ns,
+            .loc = loc,
+        };
+    }
+    
+    pub fn fromNanoTimestamp(ns: i128) Time {
+        const loc = Location.utc();
+        
+        return init(ns, loc);
+    }
+    
+    pub fn fromMicroTimestamp(t: i64) Time {
+        const loc = Location.utc();
+        const ns = @as(i128, @intCast(t * time.ns_per_us));
+        
+        return init(ns, loc);
+    }
+    
+    pub fn fromMilliTimestamp(t: i64) Time {
+        const loc = Location.utc();
+        const ns = @as(i128, @intCast(t * time.ns_per_ms));
+        
+        return init(ns, loc);
+    }
+    
+    pub fn fromTimestamp(t: i64) Time {
+        const loc = Location.utc();
+        const ns = @as(i128, @intCast(t * time.ns_per_s));
+        
+        return init(ns, loc);
+    }
 
-    const short_days = [_][]const u8{
-        "Sun",
-        "Mon",
-        "Tue",
-        "Wed",
-        "Thu",
-        "Fri",
-        "Sat",
-    };
+    pub fn fromDate(years: isize, months: isize, days: isize, loc: Location) Time {
+        return fromDatetime(years, months, days, 0, 0, 0, 0, loc);
+    }
+    
+    pub fn fromDatetime(
+        years: isize,
+        months: isize,
+        days: isize,
+        hours: isize,
+        mins: isize,
+        seces: isize,
+        nseces: isize,
+        loc: Location,
+    ) Time {
+        var v_year = years;
+        var v_day = days;
+        var v_hour = hours;
+        var v_min = mins;
+        var v_sec = seces;
+        var v_nsec = nseces;
 
-    const divResult = struct {
-        qmod: isize,
-        r: Duration,
-    };
+        // Normalize month, overflowing into year
+        var m = months - 1;
+        var r = norm(v_year, m, 12);
+        v_year = r.hi;
+        m = r.lo;
+        const v_month = @as(epoch.Month, @enumFromInt(@as(usize, @intCast(m)) + 1));
 
-    // div divides self by d and returns the quotient parity and remainder.
-    // We don't use the quotient parity anymore (round half up instead of round to even)
-    // but it's still here in case we change our minds.
+        // Normalize nsec, sec, min, hour, overflowing into day.
+        r = norm(v_sec, v_nsec, 1e9);
+        v_sec = r.hi;
+        v_nsec = r.lo;
+        r = norm(v_min, v_sec, 60);
+        v_min = r.hi;
+        v_sec = r.lo;
+        r = norm(v_hour, v_min, 60);
+        v_hour = r.hi;
+        v_min = r.lo;
+        r = norm(v_day, v_hour, 24);
+        v_day = r.hi;
+        v_hour = r.lo;
+
+        // Compute days since the absolute epoch.
+        var d = daysSinceeEpoch(v_year);
+
+        // Add in days before this month.
+        d += @as(u64, @intCast(daysBefore[@intFromEnum(v_month) - 1]));
+        if (epoch.isLeapYear(@as(epoch.Year, @intCast(v_year))) and @intFromEnum(v_month) >= @intFromEnum(epoch.Month.mar)) {
+            d += 1; // February 29
+        }
+
+        // Add in days before today.
+        d += @as(u64, @intCast(v_day - 1));
+
+        // Add in time elapsed today.
+        var abses = d * seconds_per_day;
+        abses += @as(u64, @intCast(v_hour * seconds_per_hour + v_min * seconds_per_minute + v_sec));
+
+        const ov = @addWithOverflow(@as(i64, @bitCast(abses)), (absolute_to_internal + internal_to_unix));
+        var unix_value: i64 = ov[0];
+
+        if (loc.offset != 0) {
+            unix_value -= @as(i64, @intCast(loc.offset));
+        }
+
+        const uv: i128 = @as(i128, @intCast(unix_value)) * time.ns_per_s;
+        const ns = @as(i128, @intCast(uv + @as(i128, @intCast(v_nsec))));
+
+        return init(ns, loc);
+    }
+
+    pub fn now() Time {
+        const ts = time.nanoTimestamp();
+        return fromNanoTimestamp(ts);
+    }
+
+    // =====================
+
+    pub fn utc(self: Self) Self {
+        var cp = self;
+
+        cp.value = self.value;
+        cp.loc = Location.utc();
+        return cp;
+    }
+    
+    pub fn setLoc(self: Self, loc: Location) Self {
+        var cp = self;
+
+        cp.value = self.value;
+        cp.loc = loc;
+        return cp;
+    }
+
+    pub fn location(self: Self) Location {
+        const loc = self.loc;
+        return loc;
+    }
+
+    // =====================
+    
+    pub fn timestamp(self: Self) i64 {
+        return @as(i64, @intCast(@divFloor(self.value, time.ns_per_s)));
+    }
+    
+    pub fn milliTimestamp(self: Self) i64 {
+        return @as(i64, @intCast(@divFloor(self.value, time.ns_per_ms)));
+    }
+    
+    pub fn microTimestamp(self: Self) i64 {
+        return @as(i64, @intCast(@divFloor(self.value, time.ns_per_us)));
+    }
+    
+    pub fn nanoTimestamp(self: Self) i128 {
+        return self.value;
+    }
+    
+    // =====================
+    
+    fn sec(self: Self) i64 {
+        return @divTrunc(@as(isize, @intCast(self.value)), time.ns_per_s);
+    }
+
+    fn unixSec(self: Self) i64 {
+        return self.sec();
+    }
 
     fn nsec(self: Self) i32 {
-        if (self.wall == 0) {
+        if (self.value == 0) {
             return 0;
         }
-        return @as(i32, @intCast(self.wall & nsec_mask));
+        
+        return @as(i32, @intCast((self.value - (self.unixSec() * time.ns_per_s)) & nsec_mask));
     }
-
-    fn sec(self: Self) i64 {
-        if ((self.wall & has_monotonic) != 0) {
-            return wall_to_internal + @as(i64, @intCast(self.wall << 1 >> (nsec_shift + 1)));
-        }
-        return self.ext;
-    }
-
-    // unixSec returns the time's seconds since Jan 1 1970 (Unix time).
-    fn unixSec(self: Self) i64 {
-        return self.sec() + internal_to_unix;
-    }
-
+ 
     pub fn unix(self: Self) i64 {
         return self.unixSec();
     }
+    
+    fn abs(self: Self) u64 {
+        var usec = self.unixSec();
+        usec += @as(i64, @intCast(self.loc.offset));
 
-    fn addSec(self: *Self, d: i64) void {
-        if ((self.wall & has_monotonic) != 0) {
-            const s = @as(i64, @intCast(self.wall << 1 >> (nsec_shift + 1)));
-            const dsec = s + d;
-            if (0 <= dsec and dsec <= (1 << 33) - 1) {
-                self.wall = self.wall & nsec_mask | @as(u64, @intCast(dsec)) << nsec_shift | has_monotonic;
-                return;
-            }
-            // Wall second now out of range for packed field.
-            // Move to ext
-            self.stripMono();
-        }
-        self.ext += d;
+        const ov = @addWithOverflow(usec, unix_to_internal + internal_to_absolute);
+        const result: i64 = ov[0];
+
+        return @as(u64, @bitCast(result));
     }
-
-    /// returns the time corresponding to adding the
-    /// given number of years, months, and days to self.
-    /// For example, addDate(-1, 2, 3) applied to January 1, 2011
-    /// returns March 4, 2010.
-    ///
-    /// addDate normalizes its result in the same way that Date does,
-    /// so, for example, adding one month to October 31 yields
-    /// December 1, the normalized form for November 31.
-    pub fn addDate(self: Self, years: isize, number_of_months: isize, number_of_days: isize) Self {
+      
+    pub fn date(self: Self) DateDetail {
+        return absDate(self.abs(), true);
+    }
+    
+    pub fn year(self: Self) epoch.Year {
         const d = self.date();
-        const c = self.clock();
-        const m = @as(isize, @intCast(@intFromEnum(d.month))) + number_of_months;
-        return context.date(
-            d.year + years,
-            m,
-            d.day + number_of_days,
-            c.hour,
-            c.min,
-            c.sec,
-            @as(isize, @intCast(self.nsec())),
-            self.loc,
-        );
+        return @as(epoch.Year, @intCast(d.year));
     }
 
-    fn stripMono(self: *Self) void {
-        if ((self.wall & has_monotonic) != 0) {
-            self.ext = self.sec();
-            self.wall &= nsec_mask;
-        }
+    pub fn month(self: Self) epoch.Month {
+        const d = self.date();
+        return d.month;
     }
 
-    pub fn setLoc(self: Self, l: *Location) void {
-        self.stripMono();
-        self.loc = l;
+    pub fn day(self: Self) u9 {
+        const d = self.date();
+        return @as(u9, @intCast(d.day));
+    }
+    
+    pub fn yearDay(self: Self) u16 {
+        const d = absDate(self.abs(), false);
+        return @as(u16, @intCast(d.yday)) + 1;
     }
 
-    fn setMono(self: Self, m: i64) void {
-        if ((self.wall & has_monotonic) == 0) {
-            const s = self.ext;
-            if (s < min_wall or max_wall < s) {
-                return;
-            }
-            self.wall |= has_monotonic | @as(u64, @intCast(s - min_wall)) << nsec_shift;
-        }
-        self.ext = m;
-    }
-    // mono returns t's monotonic clock reading.
-    // It returns 0 for a missing reading.
-    // This function is used only for testing,
-    // so it's OK that technically 0 is a valid
-    // monotonic clock reading as well.
-    fn mono(self: Self) i64 {
-        if ((self.wall & has_monotonic) == 0) {
-            return 0;
-        }
-        return self.ext;
+    /// clock returns the hour, minute, and second within the day specified by t.
+    pub fn clock(self: Self) Clock {
+        return Clock.absClock(self.abs());
     }
 
-    /// reports whether self represents the zero time instant,
-    /// January 1, year 1, 00:00:00 UTC.
+    pub fn hour(self: Self) u5 {
+        const d = @divTrunc(@as(isize, @intCast(self.abs() % seconds_per_day)), seconds_per_hour);
+        return @as(u5, @intCast(d));
+    }
+
+    pub fn minute(self: Self) u6 {
+        const d = @divTrunc(@as(isize, @intCast(self.abs() % seconds_per_hour)), seconds_per_minute);
+        return @as(u6, @intCast(d));
+    }
+
+    pub fn second(self: Self) u6 {
+        const d = @as(isize, @intCast(self.abs() % seconds_per_minute));
+        return @as(u6, @intCast(d));
+    }
+
+    // milliseconds returns the duration as an integer millisecond count.
+    pub fn milliseconds(self: Self) i32 {
+        return @divTrunc(self.nsec(), time.ns_per_ms);
+    }
+
+    // microseconds returns the duration as an integer microsecond count.
+    pub fn microseconds(self: Self) i32 {
+        return @divTrunc(self.nsec(), time.ns_per_us);
+    }
+
+    /// returns the nanosecond offset within the second specified by self,
+    /// in the range [0, 999999999].
+    pub fn nanosecond(self: Self) i32 {
+        return self.nsec();
+    }
+    
+    // =====================
+
+    // compare a is isZero
     pub fn isZero(self: Self) bool {
-        return self.sec() == 0 and self.nsec() == 0;
+        return self.nanoTimestamp() == 0;
     }
-
-    /// returns true if time self is after time u.
+    
+    // returns true if time self is after time u.
     pub fn after(self: Self, u: Self) bool {
         const ts = self.sec();
         const us = u.sec();
         return ts > us or (ts == us and self.nsec() > u.nsec());
     }
 
-    /// returns true if time self is before u.
+    // returns true if time self is before u.
     pub fn before(self: Self, u: Self) bool {
-        return (self.sec() < u.sec()) or (self.sec() == u.sec() and self.nsec() < u.nsec());
+        const ts = self.sec();
+        const us = u.sec();
+        return (ts < us) or (ts == us and self.nsec() < u.nsec());
+    }
+    
+    pub fn equal(self: Self, other: Self) bool {
+        return self.nanoTimestamp() == other.nanoTimestamp();
     }
 
-    /// reports whether self and u represent the same time instant.
-    /// Two times can be equal even if they are in different locations.
-    /// For example, 6:00 +0200 CEST and 4:00 UTC are Equal.
-    /// See the documentation on the Time type for the pitfalls of using == with
-    /// Time values; most code should use Equal instead.
-    pub fn equal(self: Self, u: Self) bool {
-        return self.sec() == u.sec() and self.nsec() == u.nsec();
+    // compare compares the time instant t with u. If t is before u, it returns -1;
+    // if t is after u, it returns +1; if they're the same, it returns 0.
+    pub fn compare(self: Self, other: Self) isize {
+        if (self.value < other.value) {
+            return -1;
+        } else if (self.value > other.value) {
+            return 1;
+        } else {
+            return 0;
+        }
     }
+    
+    // =====================
 
-    /// abs returns the time self as an absolute time, adjusted by the zone offset.
-    /// It is called when computing a presentation property like Month or Hour.
-    fn abs(self: Self) u64 {
-        var usec = self.unixSec();
-        const d = self.loc.lookup(usec);
-        usec += @as(i64, @intCast(d.offset));
-
-        const ov: i64 = @addWithOverflow(usec, (unix_to_internal + internal_to_absolute));
-
-        var result: i64 = ov[0];
-
-        return @as(u64, @bitCast(result));
-    }
-
-    pub fn date(self: Self) DateDetail {
-        return absDate(self.abs(), true);
-    }
-
-    pub fn year(self: Self) isize {
+    pub fn beginOfHour(self: Self) Self {
         const d = self.date();
-        return d.year;
+        const c = self.clock();
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            c.hour,
+            0,
+            0,
+            0,
+            self.loc,
+        );
     }
 
-    pub fn month(self: Self) Month {
+    pub fn endOfHour(self: Self) Self {
         const d = self.date();
-        return d.month;
+        const c = self.clock();
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            c.hour,
+            59,
+            59,
+            999999999,
+            self.loc,
+        );
     }
 
-    pub fn day(self: Self) isize {
+    pub fn beginOfDay(self: Self) Self {
         const d = self.date();
-        return d.day;
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            0,
+            0,
+            0,
+            0,
+            self.loc,
+        );
     }
 
+    pub fn endOfDay(self: Self) Self {
+        const d = self.date();
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            23,
+            59,
+            59,
+            999999999,
+            self.loc,
+        );
+    }
+    
+    pub fn beginOfWeek(self: Self) Self {
+        var week_day = @as(isize, @intCast(@intFromEnum(self.weekday())));
+        if (week_day == 0) {
+            week_day = 7;
+        }
+
+        const d = self.addDate(0, 0, -(week_day-1)).date();
+
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            0,
+            0,
+            0,
+            0,
+            self.loc,
+        );
+    }
+
+    pub fn endOfWeek(self: Self) Self {
+        const dd = self.beginOfWeek().addDate(0, 0, 6); 
+        const d = dd.date();
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            d.day,
+            23,
+            59,
+            59,
+            999999999,
+            self.loc,
+        );
+    }
+    
+    pub fn beginOfMonth(self: Self) Self {
+        const d = self.date();
+        return fromDatetime(
+            d.year,
+            @as(isize, @intCast(@intFromEnum(d.month))),
+            1,
+            0,
+            0,
+            0,
+            0,
+            self.loc,
+        );
+    }
+
+    pub fn endOfMonth(self: Self) Self {
+        return self.beginOfMonth().addDate(0, 1, 0)
+            .add(Duration.init(-Duration.Second.value))
+            .add(Duration.init(999999999*Duration.Nanosecond.value));
+    }
+    
+    // =====================
+    
     /// returns the day of the week specified by self.
     pub fn weekday(self: Self) Weekday {
         return absWeekday(self.abs());
@@ -774,14 +570,14 @@ pub const Time = struct {
         // A year has 53 weeks when Jan 1 or Dec 31 is a Thursday,
         // meaning Jan 1 of the next year is a Friday
         // or it was a leap year and Jan 1 of the next year is a Saturday.
-        if (jan1wday == Fri or (jan1wday == Sat) and isLeap(d.year)) {
+        if (jan1wday == Fri or (jan1wday == Sat) and epoch.isLeapYear(@as(epoch.Year, @intCast(d.year)))) {
             week += 1;
         }
 
         // December 29 to 31 are in week 1 of next year if
         // they are after the last Thursday of the year and
         // December 31 is a Monday, Tuesday, or Wednesday.
-        if (@intFromEnum(d.month) == @intFromEnum(Month.December) and d.day >= 29 and wday < Thu) {
+        if (@intFromEnum(d.month) == @intFromEnum(epoch.Month.dec) and d.day >= 29 and wday < Thu) {
             const dec31wday = @mod((wday + 31 - d.day), 7);
             if (Mon <= dec31wday and dec31wday <= Wed) {
                 d.year += 1;
@@ -789,1122 +585,582 @@ pub const Time = struct {
             }
         }
 
-        return ISOWeek{ .year = d.year, .week = week };
-    }
-
-    /// clock returns the hour, minute, and second within the day specified by t.
-    pub fn clock(self: Self) Clock {
-        return Clock.absClock(self.abs());
-    }
-
-    /// returns the hour within the day specified by self, in the range [0, 23].
-    pub fn hour(self: Self) isize {
-        return @divTrunc(@as(isize, @intCast(self.abs() % seconds_per_day)), seconds_per_hour);
-    }
-
-    /// returns the minute offset within the hour specified by self, in the
-    /// range [0, 59].
-    pub fn minute(self: Self) isize {
-        return @divTrunc(@as(isize, @intCast(self.abs() % seconds_per_hour)), seconds_per_minute);
-    }
-
-    /// returns the second offset within the minute specified by self, in the
-    /// range [0, 59].
-    pub fn second(self: Self) isize {
-        return @as(isize, @intCast(self.abs() % seconds_per_minute));
-    }
-
-    /// returns the nanosecond offset within the second specified by self,
-    /// in the range [0, 999999999].
-    pub fn nanosecond(self: Self) isize {
-        return @as(isize, @intCast(self.nsec()));
-    }
-
-    /// returns the day of the year specified by self, in the range [1,365] for non-leap years,
-    /// and [1,366] in leap years.
-    pub fn yearDay(self: Self) isize {
-        const d = absDate(self.abs(), false);
-        return d.yday + 1;
-    }
-
-    /// computes the time zone in effect at time t, returning the abbreviated
-    /// name of the zone (such as "CET") and its offset in seconds east of UTC.
-    pub fn zone(self: Self) ZoneDetail {
-        const zn = self.loc.lookup(self.unixSec());
-        return ZoneDetail{
-            .name = zn.name,
-            .offset = zn.offset,
+        return .{ 
+            .year = d.year, 
+            .week = week, 
         };
     }
 
-    /// utc returns time with the location set to UTC.
-    fn utc(self: Self) Self {
-        return Time{
-            .wall = self.wall,
-            .ext = self.ext,
-            .loc = &Location.utc_local,
+    //// seconds since epoch Oct 1, 1970 at 12:00 AM
+    pub fn epochSeconds(self: Self) epoch.EpochSeconds {
+        return .{
+            .secs = @as(u64, @intCast(self.sec())),
         };
     }
+    
+    // =====================
 
-    fn string(self: Self, out: anytype) !void {
-        try self.formatBuffer(out, DefaultFormat);
-        // Format monotonic clock reading as m=±ddd.nnnnnnnnn.
-        if ((self.wall & has_monotonic) != 0) {
-            var m2 = @as(u64, @intCast(self.ext));
-            var sign: u8 = '+';
-            if (self.ext < 0) {
-                sign = '-';
-                m2 = @as(u64, @intCast(-self.ext));
-            }
-            var m1 = @divTrunc(m2, @as(u64, 1e9));
-            m2 = @mod(m2, @as(u64, 1e9));
-            var m0 = @divTrunc(m1, @as(u64, 1e9));
-            m1 = @mod(m1, @as(u64, 1e9));
-            try out.writeAll("m=");
-            try out.writeByte(sign);
-            var wid: usize = 0;
-            if (m0 != 0) {
-                try appendInt(out, @as(isize, @intCast(m0)), 0);
-                wid = 9;
-            }
-            try appendInt(out, @as(isize, @intCast(m1)), wid);
-            try out.writeByte('.');
-            try appendInt(out, @as(isize, @intCast(m2)), 9);
+    pub fn add(self: Self, d: Duration) Self {
+        var cp = self;
+        cp.value += @as(i128, @intCast(d.value));
+
+        return cp;
+    }
+
+    pub fn sub(self: Self, u: Self) Duration {
+        const d = Duration.init(@as(i64, @intCast(self.value - u.value)));
+
+        if (u.add(d).equal(self)) {
+            return d;
+        } else if (self.before(u)) {
+            return Duration.minDuration;
+        } else {
+            return Duration.maxDuration;
         }
+    } 
+
+    pub fn addDate(self: Self, years: isize, number_of_months: isize, number_of_days: isize) Self {
+        const d = self.date();
+        const c = self.clock();
+        const m = @as(isize, @intCast(@intFromEnum(d.month))) + number_of_months;
+        return fromDatetime(
+            d.year + years,
+            m,
+            d.day + number_of_days,
+            c.hour,
+            c.min,
+            c.sec,
+            @as(isize, @intCast(self.nsec())),
+            self.loc,
+        );
+    }
+    
+    // =====================
+
+    /// this gt other
+    pub fn gt(self: Self, other: Self) bool {
+        return self.after(other);
     }
 
-    pub fn format(
-        self: Self,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        out_stream: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    /// this lt other
+    pub fn lt(self: Self, other: Self) bool {
+        return self.before(other);
+    }
+
+    /// this equal other
+    pub fn eq(self: Self, other: Self) bool {
+        return self.equal(other);
+    }
+
+    /// this not equal other
+    pub fn ne(self: Self, other: Self) bool {
+        return !self.eq(other);
+    }
+    
+    pub fn gte(self: Self, other: Self) bool {
+        return self.gt(other) or self.eq(other);
+    }
+    
+    pub fn lte(self: Self, other: Self) bool {
+        return self.lt(other) or self.eq(other);
+    }
+    
+    pub fn between(self: Self, start: Self, end: Self) bool {
+        if (self.gt(start) and self.lt(end)) {
+            return true;
+        }
+
+        return false;
+    }
+    
+    pub fn betweenIncluded(self: Self, start: Self, end: Self) bool {
+        if (self.gte(start) and self.lte(end)) {
+            return true;
+        }
+
+        return false;
+    }
+    
+    pub fn betweenIncludedStart(self: Self, start: Self, end: Self) bool {
+        if (self.gte(start) and self.lt(end)) {
+            return true;
+        }
+
+        return false;
+    }
+    
+    pub fn betweenIncludedEnd(self: Self, start: Self, end: Self) bool {
+        if (self.gt(start) and self.lte(end)) {
+            return true;
+        }
+
+        return false;
+    }
+    
+    // =====================
+
+    pub fn parse(comptime layout: []const u8, value: []const u8) !Time {  
+        const t = try parseInLocation(layout, value, Location.utc());
         
-        try self.string(out_stream);
+        return t;
     }
 
-    /// writes into out a textual representation of the time value formatted
-    /// according to layout, which defines the format by showing how the reference
-    /// time, defined to be
-    ///   Mon Jan 2 15:04:05 -0700 MST 2006
-    /// would be displayed if it were the value; it serves as an example of the
-    /// desired output. The same display rules will then be applied to the time
-    /// value.
-    ///
-    /// A fractional second is represented by adding a period and zeros
-    /// to the end of the seconds section of layout string, as in "15:04:05.000"
-    /// to format a time stamp with millisecond precision.
-    ///
-    /// Predefined layouts ANSIC, UnixDate, RFC3339 and others describe standard
-    /// and convenient representations of the reference time. For more information
-    /// about the formats and the definition of the reference time, see the
-    /// documentation for ANSIC and the other constants defined by this package.
-    pub fn formatBuffer(self: Self, out: anytype, layout: []const u8) !void {
-        return self.appendFormat(out, layout);
-    }
+    pub fn parseInLocation(comptime layout: []const u8, value: []const u8, loction: Location) !Time {    
+        if (layout.len == 0) {
+            @compileError("DateTime: layout string can't be empty");
+        }
 
-    fn appendInt(stream: anytype, x: isize, width: usize) !void {
-        var u = std.math.absCast(x);
-        if (x < 0) {
-            _ = try stream.write("-");
-        }
-        var buf: [20]u8 = undefined;
-        var i = buf.len;
-        while (u >= 10) {
-            i -= 1;
-            const q = @divTrunc(u, 10);
-            buf[i] = @as(u8, @intCast('0' + u - q * 10));
-            u = q;
-        }
-        i -= 1;
-        buf[i] = '0' + @as(u8, @intCast(u));
-        var w = buf.len - i;
-        while (w < width) : (w += 1) {
-            _ = try stream.write("0");
-        }
-        const v = buf[i..];
-        _ = try stream.write(v);
-    }
-
-    fn formatNano(stream: anytype, nanosec: usize, n: usize, trim: bool) !void {
-        var u = nanosec;
-        var buf = [_]u8{0} ** 9;
-        var start = buf.len;
-        while (start > 0) {
-            start -= 1;
-            buf[start] = @as(u8, @intCast(@mod(u, 10) + '0'));
-            u /= 10;
-        }
-        var x = n;
-        if (x > 9) {
-            x = 9;
-        }
-        if (trim) {
-            while (x > 0 and buf[x - 1] == '0') : (x -= 1) {}
-            if (x == 0) {
-                return;
-            }
-        }
-        _ = try stream.write(".");
-        _ = try stream.write(buf[0..x]);
-    }
-
-    /// appendFormat is like Format but appends the textual
-    /// representation to b
-    pub fn appendFormat(self: Self, stream: anytype, layout: []const u8) !void {
-        // const abs_value = self.abs();
-        const tz = self.zone();
-        const clock_value = self.clock();
-        const ddate = self.date();
-        var lay = layout;
-        while (lay.len != 0) {
-            const ctx = nextStdChunk(lay);
-            if (ctx.prefix.len != 0) {
-                try stream.writeAll(ctx.prefix);
-            }
-            lay = ctx.suffix;
-            switch (ctx.chunk) {
-                .none => return,
-                .stdYear => {
-                    var y = ddate.year;
-                    if (y < 0) {
-                        y = -y;
-                    }
-                    try appendInt(stream, @mod(y, 100), 2);
-                },
-                .stdLongYear => {
-                    try appendInt(stream, ddate.year, 4);
-                },
-                .stdMonth => {
-                    _ = try stream.write(ddate.month.string()[0..3]);
-                },
-                .stdLongMonth => {
-                    _ = try stream.write(ddate.month.string());
-                },
-                .stdNumMonth => {
-                    try appendInt(stream, @as(isize, @intCast(@intFromEnum(ddate.month))), 0);
-                },
-                .stdZeroMonth => {
-                    try appendInt(stream, @as(isize, @intCast(@intFromEnum(ddate.month))), 2);
-                },
-                .stdWeekDay => {
-                    const wk = self.weekday();
-                    _ = try stream.write(wk.string()[0..3]);
-                },
-                .stdLongWeekDay => {
-                    const wk = self.weekday();
-                    _ = try stream.write(wk.string());
-                },
-                .stdDay => {
-                    try appendInt(stream, ddate.day, 0);
-                },
-                .stdUnderDay => {
-                    if (ddate.day < 10) {
-                        _ = try stream.write(" ");
-                    }
-                    try appendInt(stream, ddate.day, 0);
-                },
-                .stdZeroDay => {
-                    try appendInt(stream, ddate.day, 2);
-                },
-                .stdHour => {
-                    try appendInt(stream, clock_value.hour, 2);
-                },
-                .stdHour12 => {
-                    // Noon is 12PM, midnight is 12AM.
-                    var hr = @mod(clock_value.hour, 12);
-                    if (hr == 0) {
-                        hr = 12;
-                    }
-                    try appendInt(stream, hr, 0);
-                },
-                .stdZeroHour12 => {
-                    // Noon is 12PM, midnight is 12AM.
-                    var hr = @mod(clock_value.hour, 12);
-                    if (hr == 0) {
-                        hr = 12;
-                    }
-                    try appendInt(stream, hr, 2);
-                },
-                .stdMinute => {
-                    try appendInt(stream, clock_value.min, 0);
-                },
-                .stdZeroMinute => {
-                    try appendInt(stream, clock_value.min, 2);
-                },
-                .stdSecond => {
-                    try appendInt(stream, clock_value.sec, 0);
-                },
-                .stdZeroSecond => {
-                    try appendInt(stream, clock_value.sec, 2);
-                },
-                .stdPM => {
-                    if (clock_value.hour >= 12) {
-                        _ = try stream.write("PM");
-                    } else {
-                        _ = try stream.write("AM");
-                    }
-                },
-                .stdpm => {
-                    if (clock_value.hour >= 12) {
-                        _ = try stream.write("pm");
-                    } else {
-                        _ = try stream.write("am");
-                    }
-                },
-                .stdISO8601TZ, .stdISO8601ColonTZ, .stdISO8601SecondsTZ, .stdISO8601ShortTZ, .stdISO8601ColonSecondsTZ, .stdNumTZ, .stdNumColonTZ, .stdNumSecondsTz, .stdNumShortTZ, .stdNumColonSecondsTZ => {
-                    // Ugly special case. We cheat and take the "Z" variants
-                    // to mean "the time zone as formatted for ISO 8601".
-                    const cond = tz.offset == 0 and (ctx.chunk.eql(chunk.stdISO8601TZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ColonTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601SecondsTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ShortTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ColonSecondsTZ));
-                    if (cond) {
-                        _ = try stream.write("Z");
-                    }
-                    var z = @divTrunc(tz.offset, 60);
-                    var abs_offset = tz.offset;
-                    if (z < 0) {
-                        _ = try stream.write("-");
-                        z = -z;
-                        abs_offset = -abs_offset;
-                    } else {
-                        _ = try stream.write("+");
-                    }
-                    try appendInt(stream, @divTrunc(z, 60), 2);
-                    if (ctx.chunk.eql(chunk.stdISO8601ColonTZ) or
-                        ctx.chunk.eql(chunk.stdNumColonTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ColonSecondsTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ColonSecondsTZ) or
-                        ctx.chunk.eql(chunk.stdNumColonSecondsTZ))
-                    {
-                        _ = try stream.write(":");
-                    }
-                    if (!ctx.chunk.eql(chunk.stdNumShortTZ) and !ctx.chunk.eql(chunk.stdISO8601ShortTZ)) {
-                        try appendInt(stream, @mod(z, 60), 2);
-                    }
-                    if (ctx.chunk.eql(chunk.stdISO8601SecondsTZ) or
-                        ctx.chunk.eql(chunk.stdNumSecondsTz) or
-                        ctx.chunk.eql(chunk.stdNumColonSecondsTZ) or
-                        ctx.chunk.eql(chunk.stdISO8601ColonSecondsTZ))
-                    {
-                        if (ctx.chunk.eql(chunk.stdNumColonSecondsTZ) or
-                            ctx.chunk.eql(chunk.stdISO8601ColonSecondsTZ))
-                        {
-                            _ = try stream.write(":");
-                        }
-                        try appendInt(stream, @mod(abs_offset, 60), 2);
-                    }
-                },
-                .stdTZ => {
-                    if (tz.name.len != 0) {
-                        _ = try stream.write(tz.name);
-                        continue;
-                    }
-                    var z = @divTrunc(tz.offset, 60);
-                    if (z < 0) {
-                        _ = try stream.write("-");
-                        z = -z;
-                    } else {
-                        _ = try stream.write("+");
-                    }
-                    try appendInt(stream, @divTrunc(z, 60), 2);
-                    try appendInt(stream, @mod(z, 60), 2);
-                },
-                .stdFracSecond0, .stdFracSecond9 => {
-                    try formatNano(stream, @as(usize, @intCast(self.nanosecond())), ctx.args_shift.?, ctx.chunk.eql(chunk.stdFracSecond9));
-                },
-                else => unreachable,
-            }
-        }
-    }
-
-    fn parseInternal(layout: []const u8, value: []const u8, default_location: *Location, local: *Location) !Self {
-        // var alayout = layout;
-        // var avalue = value;
+        @setEvalBranchQuota(100000);
+        
         var am_set = false;
         var pm_set = false;
 
         var parsed_year: isize = 0;
         var parsed_month: isize = -1;
         var parsed_day: isize = -1;
-        var parsed_yday: isize = -1;
         var parsed_hour: isize = 0;
         var parsed_min: isize = 0;
         var parsed_sec: isize = 0;
         var parsed_nsec: isize = 0;
-        // var z: ?*Location = null;
-        // var zone_offset: isize = -1;
-        // var zone_name = "";
 
-        _ = local;
-        _ = default_location;
+        var parsed_loc: ?Location = null;
 
-        var lay = layout;
         var val = value;
-        while (true) {
-            const ctx = nextStdChunk(lay);
-            // const std_str = lay[ctx.prefix.len..(lay.len - ctx.suffix.len)];
-            val = try skip(val, ctx.prefix);
 
-            if (ctx.chunk == .none) {
-                if (val.len != 0) {
-                    return error.ExtraText;
-                }
-            }
-            lay = ctx.suffix;
-            switch (ctx.chunk) {
-                .stdYear => {
-                    if (val.len < 2) {
-                        return error.BadValue;
-                    }
-                    const p = val[0..2];
-                    val = val[2..];
-                    // var has_err = false;
-                    parsed_year = try std.fmt.parseInt(isize, p, 10);
-                    if (parsed_year >= 69) {
-                        // Unix time starts Dec 31 1969 in some time zones
-                        parsed_year += 1900;
-                    } else {
-                        parsed_year += 2000;
-                    }
-                },
-                .stdLongYear => {
-                    if (val.len < 4 or !isDigit(val, 0)) {
-                        return error.BadValue;
-                    }
-                    const p = val[0..4];
-                    val = val[4..];
-                    parsed_year = try std.fmt.parseInt(isize, p, 10);
-                },
-                .stdMonth => {
-                    const idx = try lookup(short_month_names, val);
-                    parsed_month = @as(isize, @intCast(idx));
-                    val = val[short_month_names[idx].len..];
-                    parsed_month += 1;
-                },
-                .stdLongMonth => {
-                    const idx = try lookup(long_month_names, val);
-                    parsed_month = @as(isize, @intCast(idx));
-                    val = val[long_month_names[idx].len..];
-                    parsed_month += 1;
-                },
-                .stdNumMonth, .stdZeroMonth => {
-                    const n = try getNum(val, ctx.chunk == .stdZeroMonth);
-                    parsed_month = n.value;
-                    val = n.string;
-                },
-                .stdWeekDay => {
-                    const idx = try lookup(short_day_names, val);
-                    val = val[short_day_names[idx].len..];
-                },
-                .stdLongWeekDay => {
-                    const idx = try lookup(long_day_names, val);
-                    val = val[long_day_names[idx].len..];
-                },
-                .stdDay, .stdUnderDay, .stdZeroDay => {
-                    if (ctx.chunk == .stdUnderDay and
-                        val.len > 0 and val[0] == ' ')
-                    {
-                        val = val[1..];
-                    }
-                    const n = try getNum(val, ctx.chunk == .stdZeroDay);
-                    parsed_day = n.value;
-                    val = n.string;
-                    // Note that we allow any one- or two-digit day here.
-                    // The month, day, year combination is validated after we've completed parsing
-                },
-                .stdUnderYearDay, .stdZeroYearDay => {
-                    var i: usize = 0;
-                    while (i < 2) : (i += 1) {
-                        if (ctx.chunk == .stdUnderYearDay and
-                            val.len > 0 and val[0] == ' ')
-                        {
-                            val = val[1..];
+        var next: ?FormatSeq = null;
+        var newFmt = layout;
+
+        while (newFmt.len > 0) {
+            const fmtSeq = nextSeq(newFmt);
+
+            newFmt = fmtSeq.last;
+            next = fmtSeq.seq;
+            
+            if (next) |tag| {
+                switch (tag) {
+                    .M, .MM => {
+                        const n = try getNum(val, fmtSeq.seq == .MM);
+                        parsed_month = n.value;
+                        val = n.string;
+                    },
+                    .Mo => {
+                        const n = try getNumFromOrdinal(val); 
+                        parsed_month = n.value;
+                        val = n.string;
+                    },
+                    .MMM => { 
+                        const idx = try lookup(short_month_names[0..], val);
+                        parsed_month = @as(isize, @intCast(idx)); 
+                        val = val[short_month_names[idx].len..];
+                        parsed_month += 1;
+                    },
+                    .MMMM => {
+                        const idx = try lookup(long_month_names[0..], val);
+                        parsed_month = @as(isize, @intCast(idx));
+                        val = val[long_month_names[idx].len..];
+                        parsed_month += 1;
+                    },
+
+                    .D, .DD => {
+                        const n = try getNum(val, fmtSeq.seq == .DD);
+                        parsed_day = n.value;
+                        val = n.string;
+                    },
+                    .Do => {
+                        const n = try getNumFromOrdinal(val); 
+                        parsed_day = n.value;
+                        val = n.string;
+                    },
+
+                    .Y => {
+                        if (val.len < 5) {
+                            return error.BadValue;
                         }
-                    }
-                    const n = try getNum3(val, ctx.chunk == .stdZeroYearDay);
-                    parsed_yday = n.value;
-                    val = n.string;
-                    // Note that we allow any one-, two-, or three-digit year-day here.
-                    // The year-day, year combination is validated after we've completed parsing.
-                },
-                .stdHour => {
-                    const n = try getNum(val, false);
-                    parsed_hour = n.value;
-                    val = n.string;
-                    if (parsed_hour < 0 or 24 <= parsed_hour) {
-                        return error.BadHourRange;
-                    }
-                },
-                .stdHour12, .stdZeroHour12 => {
-                    const n = try getNum(val, ctx.chunk == .stdZeroHour12);
-                    parsed_hour = n.value;
-                    val = n.string;
-                    if (parsed_hour < 0 or 12 <= parsed_hour) {
-                        return error.BadHourRange;
-                    }
-                },
-                .stdMinute, .stdZeroMinute => {
-                    const n = try getNum(val, ctx.chunk == .stdZeroMinute);
-                    parsed_min = n.value;
-                    val = n.string;
-                    if (parsed_min < 0 or 60 <= parsed_min) {
-                        return error.BadMinuteRange;
-                    }
-                },
-                .stdSecond, .stdZeroSecond => {
-                    const n = try getNum(val, ctx.chunk == .stdZeroSecond);
-                    parsed_sec = n.value;
-                    val = n.string;
-                    if (parsed_sec < 0 or 60 <= parsed_sec) {
-                        return error.BadSecondRange;
-                    }
-                    if (val.len > 2 and val[0] == '.' and isDigit(val, 1)) {
-                        const ch = nextStdChunk(lay);
-                        if (ch.chunk == .stdFracSecond0 or ch.chunk == .stdFracSecond9) {
-                            // Fractional second in the layout; proceed normally
-                            break;
+
+                        const p = val[0..5];
+                        val = val[5..];
+
+                        parsed_year = try std.fmt.parseInt(isize, p, 10);
+                        parsed_year -= 10000;
+                    },
+                    .YY => {
+                        if (val.len < 2) {
+                            return error.BadValue;
                         }
-                        var f: usize = 0;
-                        while (f < val.len and isDigit(val, f)) : (f += 1) {}
-                        parsed_nsec = try parseNanoseconds(val, f);
-                        val = val[f..];
-                    }
-                },
-                .stdPM => {
-                    if (val.len < 2) {
-                        return error.BadValue;
-                    }
-                    const p = val[0..2];
-                    val = val[2..];
-                    if (mem.eql(u8, p, "PM")) {
-                        pm_set = true;
-                    } else if (mem.eql(u8, p, "AM")) {
-                        am_set = true;
-                    } else {
-                        return error.BadValue;
-                    }
-                },
-                .stdpm => {
-                    if (val.len < 2) {
-                        return error.BadValue;
-                    }
-                    const p = val[0..2];
-                    val = val[2..];
-                    if (mem.eql(u8, p, "pm")) {
-                        pm_set = true;
-                    } else if (mem.eql(u8, p, "am")) {
-                        am_set = true;
-                    } else {
-                        return error.BadValue;
-                    }
-                },
-                else => {},
-            }
-        }
-        return error.TODO;
-    }
+                        
+                        const p = val[0..2];
+                        val = val[2..];
+                        
+                        parsed_year = try std.fmt.parseInt(isize, p, 10);
+                        if (parsed_year >= 69) {
+                            // Unix time starts Dec 31 1969 in some time zones
+                            parsed_year += 1900;
+                        } else {
+                            parsed_year += 2000;
+                        }
+                    },
+                    .YYYY => {
+                        if (val.len < 4 or !isDigit(val, 0)) {
+                            return error.BadValue;
+                        }
+                        
+                        const p = val[0..4];
+                        val = val[4..];
+                        parsed_year = try std.fmt.parseInt(isize, p, 10);
+                    },
 
-    /// skip removes the given prefix from value,
-    /// treating runs of space characters as equivalent.
-    fn skip(value: []const u8, prefix: []const u8) ![]const u8 {
-        var v = value;
-        var p = prefix;
-        while (p.len > 0) {
-            if (p[0] == ' ') {
-                if (v.len > 0 and v[0] != ' ') {
-                    return error.BadValue;
+                    .A => {
+                        if (val.len < 2) {
+                            return error.BadValue;
+                        }
+                        
+                        const p = val[0..2];
+                        val = val[2..];
+                        if (mem.eql(u8, p, "PM")) {
+                            pm_set = true;
+                        } else if (mem.eql(u8, p, "AM")) {
+                            am_set = true;
+                        } else {
+                            return error.BadValue;
+                        }
+                    },
+                    .a => {
+                        if (val.len < 2) {
+                            return error.BadValue;
+                        }
+                        
+                        const p = val[0..2];
+                        val = val[2..];
+                        if (mem.eql(u8, p, "pm")) {
+                            pm_set = true;
+                        } else if (mem.eql(u8, p, "am")) {
+                            am_set = true;
+                        } else {
+                            return error.BadValue;
+                        }
+                    },
+
+                    .H, .HH => {
+                        const n = try getNum(val, false);
+                        parsed_hour = n.value;
+                        
+                        val = n.string;
+                        if (parsed_hour < 0 or 24 <= parsed_hour) {
+                            return error.BadHourRange;
+                        }
+                    },
+                    .h, .hh => {
+                        const n = try getNum(val, fmtSeq.seq == .hh);
+                        parsed_hour = n.value;
+                        val = n.string;
+                        if (parsed_hour < 0 or 12 <= parsed_hour) {
+                            return error.BadHourRange;
+                        }
+                    },
+                    .k, .kk => {
+                        const n = try getNum(val, false);
+                        parsed_hour = n.value;
+                        
+                        val = n.string;
+                        if (parsed_hour < 0 or 24 <= parsed_hour) {
+                            return error.BadHourRange;
+                        }
+                    },
+
+                    .m, .mm => {
+                        const n = try getNum(val, fmtSeq.seq == .mm);
+                        parsed_min = n.value;
+                        val = n.string;
+                        if (parsed_min < 0 or 60 <= parsed_min) {
+                            return error.BadMinuteRange;
+                        }
+                    },
+
+                    .s, .ss => {
+                        const n = try getNum(val, fmtSeq.seq == .ss);
+                        parsed_sec = n.value;
+                        val = n.string;
+                        if (parsed_sec < 0 or 60 <= parsed_sec) {
+                            return error.BadSecondRange;
+                        }
+                    },
+
+                    .S, .SS, .SSS => {
+                        const n = try getNum3(val, false);
+                        parsed_nsec = n.value;
+                        
+                        val = n.string;
+                    },
+
+                    .z => {
+                        if (val.len < 3) {
+                            return error.BadValue;
+                        }
+                        
+                        const p = val[0..3];
+                        val = val[3..];
+
+                        if (ctx.equal(p, "GMT")) {
+                            parsed_loc = GMT;
+                        } else if (ctx.equal(p, "UTC")) {
+                            parsed_loc = UTC;   
+                        } else if (ctx.equal(p, "CET")) {
+                            parsed_loc = CET;  
+                        } else if (ctx.equal(p, "EET")) {
+                            parsed_loc = EET;   
+                        } else if (ctx.equal(p, "MET")) {
+                            parsed_loc = MET;   
+                        } else if (ctx.equal(p, "CTT")) {
+                            parsed_loc = CTT;   
+                        } else if (ctx.equal(p, "CAT")) {
+                            parsed_loc = CAT;   
+                        } else if (ctx.equal(p, "EST")) {
+                            parsed_loc = EST;   
+                        } else if (ctx.equal(p, "MST")) {
+                            parsed_loc = MST;   
+                        } else if (ctx.equal(p, "CST")) {
+                            parsed_loc = CST;  
+                        } else {
+                            return error.BadValue;
+                        }       
+                    },
+                    .Z, .ZZ => {
+                        const n = try parseTimezone(val); 
+                        parsed_loc = Location.create(@as(i32, @intCast(n.value)), "");
+                        val = n.string;
+                    },
+                    else => {},
                 }
-                p = cutSpace(p);
-                v = cutSpace(v);
-                continue;
-            }
-            if (v.len == 0 or v[0] != p[0]) {
-                return error.BadValue;
-            }
-            p = p[1..];
-            v = v[1..];
-        }
-        return v;
-    }
-
-    fn cutSpace(str: []const u8) []const u8 {
-        var s = str;
-        while (s.len > 0 and s[0] == ' ') : (s = s[1..]) {}
-        return s;
-    }
-
-    /// add adds returns a new Time with duration added to self.
-    pub fn add(self: Self, d: Duration) Self {
-        var dsec = @divTrunc(d.value, @as(i64, 1e9));
-        var nsec_value = self.nsec() + @as(i32, @intCast(@mod(d.value, @as(i64, 1e9))));
-        if (nsec_value >= @as(i32, 1e9)) {
-            dsec += 1;
-            nsec_value -= @as(i32, 1e9);
-        } else if (nsec_value < 0) {
-            dsec -= 1;
-            nsec_value += @as(i32, 1e9);
-        }
-        var cp = self;
-        var t = &cp;
-        t.wall = (t.wall & ~nsec_mask) | @as(u64, @intCast(nsec_value)); // update nsec
-        t.addSec(dsec);
-        if (t.wall & has_monotonic != 0) {
-            const te = t.ext + @as(i64, @intCast(d.value));
-            if (d.value < 0 and te > t.ext or d.value > 0 and te < t.ext) {
-                t.stripMono();
+                next = null;
             } else {
-                t.ext = te;
+                val = val[fmtSeq.value.len..];
             }
         }
-        return cp;
-    }
 
-    /// sub returns the duration t-u. If the result exceeds the maximum (or minimum)
-    /// value that can be stored in a Duration, the maximum (or minimum) duration
-    /// will be returned.
-    /// To compute t-d for a duration d, use self.add(-d).
-    pub fn sub(self: Self, u: Self) Duration {
-        if ((self.wall & u.wall & has_monotonic) != 0) {
-            const te = self.ext;
-            const ue = u.ext;
-            var d = Duration.init(te - ue);
-            if (d.value < 0 and te > ue) {
-                return Duration.maxDuration;
-            }
-            if (d.value > 0 and te < ue) {
-                return Duration.minDuration;
-            }
-            return d;
+        var now_loc = loction;
+        if (parsed_loc) |new_loc| {
+            now_loc = new_loc;
         }
-        const ts = self.sec();
-        const us = u.sec();
-        const ssub = ts - us;
-        if ((ssub < ts) != (us > 0)) {
-            if (self.before(u)) {
-                return Duration.minDuration;
-            }
-            return Duration.maxDuration;
-        }
-        if ((ssub < @divFloor(Duration.minDuration.value, Duration.Second.value)) or
-            (ssub > @divFloor(Duration.maxDuration.value, Duration.Second.value)))
-        {
-            if (self.before(u)) {
-                return Duration.minDuration;
-            }
-            return Duration.maxDuration;
-        }
-        var ssec: i64 = 0;
-        var nnsec: i64 = 0;
-        var d: i64 = 0;
-        ssec = ssub * Duration.Second.value;
-        nnsec = @as(i64, @intCast(self.nsec() - u.nsec()));
-        if ((d > ssec) != (nnsec > 0)) {
-            if (self.before(u)) {
-                return Duration.minDuration;
-            }
-            return Duration.maxDuration;
-        }
-        return Duration.init(d);
-    }
 
-    fn div(self: Self, d: Duration) divResult {
-        var neg = false;
-        var nsec_value = self.nsec();
-        var sec_value = self.sec();
-        if (sec_value < 0) {
-            // Operate on absolute value.
-            neg = true;
-            sec_value = -sec_value;
-            if (nsec_value < 0) {
-                nsec_value += @as(i32, 1e9);
-                sec_value -= 1;
-            }
+        if (pm_set) {
+            parsed_hour = parsed_hour + 12;
         }
-        var res = divResult{ .qmod = 0, .r = Duration.init(0) };
-        if (d.value < @mod(Duration.Second.value, d.value * 2)) {
-            res.qmod = @as(isize, @intCast(@divTrunc(nsec_value, @as(i32, @intCast(d.value))))) & 1;
-            res.r = Duration.init(@as(i64, @intCast(@mod(nsec_value, @as(i32, @intCast(d.value))))));
-        } else if (@mod(d.value, Duration.Second.value) == 0) {
-            const d1 = @divTrunc(d.value, Duration.Second.value);
-            res.qmod = @as(isize, @intCast(@divTrunc(sec_value, d1))) & 1;
-            res.r = Duration.init(@mod(sec_value, d1) * Duration.Second.value + @as(i64, @intCast(nsec_value)));
-        } else {
-            var s = @as(u64, @intCast(sec_value));
-            var tmp = (s >> 32) * u64(1e9);
-            var u_1 = tmp >> 32;
-            var u_0 = tmp << 32;
-            tmp = (s & 0xFFFFFFFF) * u64(1e9);
-            var u_0x = u_0;
-            u_0 = u_0 + tmp;
-            if (u_0 < u_0x) {
-                u_1 += 1;
-            }
-            u_0x = u_0;
-            u_0 = u_0 + @as(u64, @intCast(nsec_value));
-            if (u_0 < u_0x) {
-                u_1 += 1;
-            }
-            // Compute remainder by subtracting r<<k for decreasing k.
-            // Quotient parity is whether we subtract on last round.
-            var d1 = @as(u64, @intCast(d.value));
-            while ((d1 >> 63) != 1) {
-                d1 <<= 1;
-            }
-            var d0 = u64(0);
-            while (true) {
-                res.qmod = 0;
-                if (u_1 > d1 or u_1 == d1 and u_0 >= d0) {
-                    res.qmod = 1;
-                    u_0x = u_0;
-                    u_0 = u_0 - d0;
-                    if (u_0 > u_0x) {
-                        u_1 -= 1;
-                    }
-                    u_1 -= d1;
-                    if (d1 == 0 and d0 == @as(u64, @intCast(d.value))) {
-                        break;
-                    }
-                    d0 >>= 1;
-                    d0 |= (d1 & 1) << 63;
-                    d1 >>= 1;
-                }
-                res.r = Duration.init(@as(i64, @intCast(u_0)));
-            }
-            if (neg and res.r.value != 0) {
-                // If input was negative and not an exact multiple of d, we computed q, r such that
-                //  q*d + r = -t
-                // But the right answers are given by -(q-1), d-r:
-                //  q*d + r = -t
-                //  -q*d - r = t
-                //  -(q-1)*d + (d - r) = t
-                res.qmod ^= 1;
-                res.r = Duration.init(d.value - res.r.value);
-            }
-            return res;
-        }
-        return res;
-    }
 
-    // these are utility functions that I ported from
-    // github.com/jinzhu/now
-
-    pub fn beginningOfMinute(self: Self) Self {
-        //TODO: this needs truncate to be implemented.
-        return self;
-    }
-
-    pub fn beginningOfHour(self: Self) Self {
-        const d = self.date();
-        const c = self.clock();
-        return context.date(
-            d.year,
-            @as(isize, @intCast(@intFromEnum(d.month))),
-            d.day,
-            c.hour,
-            0,
-            0,
-            0,
-            self.loc,
+        return fromDatetime(
+            parsed_year,
+            parsed_month,
+            parsed_day,
+            parsed_hour,
+            parsed_min,
+            parsed_sec,
+            parsed_nsec,
+            now_loc,
         );
     }
-
-    pub fn beginningOfDay(self: Self) Self {
-        const d = self.date();
-        return context.date(
-            d.year,
-            @as(isize, @intCast(@intFromEnum(d.month))),
-            d.day,
-            0,
-            0,
-            0,
-            0,
-            self.loc,
-        );
-    }
-
-    pub fn beginningOfWeek(self: Self) Self {
-        // var t = self.beginningOfDay();
-        const week_day = @as(isize, @intCast(@intFromEnum(self.weekday())));
-        return self.addDate(0, 0, -week_day);
-    }
-
-    pub fn beginningOfMonth(self: Self) Self {
-        var d = self.date();
-        return context.date(
-            d.year,
-            @as(isize, @intCast(@intFromEnum(d.month))),
-            1,
-            0,
-            0,
-            0,
-            0,
-            self.loc,
-        );
-    }
-
-    pub fn endOfMonth(self: Self) Self {
-        return self.beginningOfMonth().addDate(0, 1, 0)
-            .add(Duration.init(-Duration.Hour.value));
-    }
-
-    fn current_month() [4][7]usize {
-        return [4][7]usize{
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-        };
-    }
-
-    pub fn calendar() void {
-        var ma = [_][7]usize{
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-            [_]usize{0} ** 7,
-        };
-        var m = ma[0..];
-        var local = Location.getLocal();
-        var current_time = now(&local);
-        const today = current_time.day();
-        var begin = current_time.beginningOfMonth();
-        var end = current_time.endOfMonth();
-        // const x = begin.date();
-        const y = end.date();
-        // var i: usize = 1;
-        var at = @intFromEnum(begin.weekday());
-        var mx: usize = 0;
-        var d: usize = 1;
-        while (mx < m.len) : (mx += 1) {
-            var a = m[mx][0..];
-            while (at < a.len and d <= @as(usize, @intCast(y.day))) : (at += 1) {
-                a[at] = d;
-                d += 1;
-            }
-            at = 0;
-        }
-        warn("\n", .{});
-        for (short_days) |ds| {
-            warn("{} |", .{ds});
-        }
-        warn("\n", .{});
-        for (m, 0..) |mv, idx| {
-            for (mv, 0..) |dv, vx| {
-                if (idx != 0 and vx == 0 and dv == 0) {
-                    // The pre allocated month buffer is lage enough to span 7
-                    // weeks.
-                    //
-                    // we know for a fact at the first week must have at least 1
-                    // date,any other week that start with 0 date means we are
-                    // past the end of the calendar so no need to keep printing.
-                    return;
-                }
-                if (dv == 0) {
-                    warn("    |", .{});
-                    continue;
-                }
-                if (dv == @as(usize, @intCast(today))) {
-                    if (dv < 10) {
-                        warn(" *{} |", .{dv});
-                    } else {
-                        warn("*{} |", .{dv});
-                    }
-                } else {
-                    if (dv < 10) {
-                        warn("  {} |", .{dv});
-                    } else {
-                        warn(" {} |", .{dv});
-                    }
-                }
-            }
-            warn("\n", .{});
-        }
-        warn("\n", .{});
-    }
-};
-
-const ZoneDetail = struct {
-    name: []const u8,
-    offset: isize,
-};
-
-pub const Duration = struct {
-    value: i64,
-
-    pub const Nanosecond = init(1);
-    pub const Microsecond = init(1000 * Nanosecond.value);
-    pub const Millisecond = init(1000 * Microsecond.value);
-    pub const Second = init(1000 * Millisecond.value);
-    pub const Minute = init(60 * Second.value);
-    pub const Hour = init(60 * Minute.value);
-
-    const minDuration = init(-1 << 63);
-    const maxDuration = init((1 << 63) - 1);
-
-    const fracRes = struct {
-        nw: usize,
-        nv: u64,
-    };
-
-    // fmtFrac formats the fraction of v/10**prec (e.g., ".12345") into the
-    // tail of buf, omitting trailing zeros. It omits the decimal
-    // point too when the fraction is 0. It returns the index where the
-    // output bytes begin and the value v/10**prec.
-
-    pub fn init(v: i64) Duration {
-        return Duration{ .value = v };
-    }
-
-    fn fmtFrac(buf: []u8, value: u64, prec: usize) fracRes {
-        // Omit trailing zeros up to and including decimal point.
-        var w = buf.len;
-        var v = value;
-        var i: usize = 0;
-        var print: bool = false;
-        while (i < prec) : (i += 1) {
-            const digit = @mod(v, 10);
-            print = print or digit != 0;
-            if (print) {
-                w -= 1;
-                buf[w] = @as(u8, @intCast(digit)) + '0';
-            }
-            v /= 10;
-        }
-        if (print) {
-            w -= 1;
-            buf[w] = '.';
-        }
-        return fracRes{ .nw = w, .nv = v };
-    }
-
-    fn fmtInt(buf: []u8, value: u64) usize {
-        var w = buf.len;
-        var v = value;
-        if (v == 0) {
-            w -= 1;
-            buf[w] = '0';
-        } else {
-            while (v > 0) {
-                w -= 1;
-                buf[w] = @as(u8, @intCast(@mod(v, 10))) + '0';
-                v /= 10;
-            }
-        }
-        return w;
-    }
-
-    pub fn string(self: Duration) []const u8 {
-        var buf: [32]u8 = undefined;
-        var w = buf.len;
-        var u = @as(u64, @intCast(self.value));
-        const neg = self.value < 0;
-        if (neg) {
-            u = @as(u64, @intCast(-self.value));
-        }
-        if (u < @as(u64, @intCast(Second.value))) {
-            // Special case: if duration is smaller than a second,
-            // use smaller units, like 1.2ms
-            var prec: usize = 0;
-            w -= 1;
-            buf[w] = 's';
-            w -= 1;
-            if (u == 0) {
-                const s = "0s";
-                return s[0..];
-            } else if (u < @as(u64, @intCast(Microsecond.value))) {
-                // print nanoseconds
-                prec = 0;
-                buf[w] = 'n';
-            } else if (u < @as(u64, @intCast(Millisecond.value))) {
-                // print microseconds
-                prec = 3;
-                // U+00B5 'µ' micro sign == 0xC2 0xB5
-                w -= 1;
-                mem.copy(u8, buf[w..], "µ");
-            } else {
-                prec = 6;
-                buf[w] = 'm';
-            }
-            const r = fmtFrac(buf[0..w], u, prec);
-            w = r.nw;
-            u = r.nv;
-            w = fmtInt(buf[0..w], u);
-        } else {
-            w -= 1;
-            buf[w] = 's';
-            const r = fmtFrac(buf[0..w], u, 9);
-            w = r.nw;
-            u = r.nv;
-            w = fmtInt(buf[0..w], @mod(u, 60));
-            u /= 60;
-            // u is now integer minutes
-            if (u > 0) {
-                w -= 1;
-                buf[w] = 'm';
-                w = fmtInt(buf[0..w], @mod(u, 60));
-                u /= 60;
-                // u is now integer hours
-                // Stop at hours because days can be different lengths.
-                if (u > 0) {
-                    w -= 1;
-                    buf[w] = 'h';
-                    w = fmtInt(buf[0..w], u);
-                }
-            }
-        }
-        if (neg) {
-            w -= 1;
-            buf[w] = '-';
-        }
-        return buf[w..];
-    }
-
-    pub fn format(
-        self: Duration,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        out_stream: anytype,
-    ) !void {
-        _ = fmt;
+    
+    /// format datetime to output string
+    pub fn format(self: Self, comptime fmt: string, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
 
-        try out_stream(context, self.string());
-    }
-
-    /// nanoseconds returns the duration as an integer nanosecond count.
-    pub fn nanoseconds(self: Duration) i64 {
-        return self.value;
-    }
-
-    // These methods return float64 because the dominant
-    // use case is for printing a floating point number like 1.5s, and
-    // a truncation to integer would make them not useful in those cases.
-    // Splitting the integer and fraction ourselves guarantees that
-    // converting the returned float64 to an integer rounds the same
-    // way that a pure integer conversion would have, even in cases
-    // where, say, float64(d.Nanoseconds())/1e9 would have rounded
-    // differently.
-
-    /// Seconds returns the duration as a floating point number of seconds.
-    pub fn seconds(self: Duration) f64 {
-        const sec = @divTrunc(self.value, Second.value);
-        const nsec = @mod(self.value, Second.value);
-        return @as(f64, @floatFromInt(sec)) + @as(f64, @floatFromInt(nsec)) / 1e9;
-    }
-
-    /// Minutes returns the duration as a floating point number of minutes.
-    pub fn minutes(self: Duration) f64 {
-        const min = @divTrunc(self.value, Minute.value);
-        const nsec = @mod(self.value, Minute.value);
-        return @as(f64, @floatFromInt(min)) + @as(f64, @floatFromInt(nsec)) / (60 * 1e9);
-    }
-
-    // Hours returns the duration as a floating point number of hours.
-    pub fn hours(self: Duration) f64 {
-        const hour = @divTrunc(self.value, Hour.value);
-        const nsec = @mod(self.value, Hour.value);
-        return @as(f64, @floatFromInt(hour)) + @as(f64, @floatFromInt(nsec)) / (60 * 60 * 1e9);
-    }
-
-    /// Truncate returns the result of rounding d toward zero to a multiple of m.
-    /// If m <= 0, Truncate returns d unchanged.
-    pub fn truncate(self: Duration, m: Duration) Duration {
-        if (m.value <= 0) {
-            return self;
-        }
-        return init(self.value - @mod(self.value, m.value));
-    }
-
-    // lessThanHalf reports whether x+x < y but avoids overflow,
-    // assuming x and y are both positive (Duration is signed).
-    fn lessThanHalf(self: Duration, m: Duration) bool {
-        const x = @as(u64, @intCast(self.value));
-        return x + x < @as(u64, @intCast(m.value));
-    }
-
-    // Round returns the result of rounding d to the nearest multiple of m.
-    // The rounding behavior for halfway values is to round away from zero.
-    // If the result exceeds the maximum (or minimum)
-    // value that can be stored in a Duration,
-    // Round returns the maximum (or minimum) duration.
-    // If m <= 0, Round returns d unchanged.
-    pub fn round(self: Duration, m: Duration) Duration {
-        if (m.value <= 0) {
-            return self;
+        if (fmt.len == 0) {
+            @compileError("DateTime: format string can't be empty");
         }
 
-        var r = init(@mod(self.value, m.value));
-        if (self.value < 0) {
-            r.value = -r.value;
-            if (r.lessThanHalf(m)) {
-                return init(self.value + r.value);
+        @setEvalBranchQuota(100000);
+
+        const tz = self.location();
+
+        const d = self.date();
+
+        const years = @as(u16, @intCast(d.year));
+        const months = d.month.numeric() - 1;
+        const days = @as(u8, @intCast(d.day));
+
+        const hours = self.hour();
+        const minutes = self.minute();
+        const seconds = self.second();
+        const ms = @as(u16, @intCast(@divTrunc(self.nanosecond(), time.ns_per_ms)));
+        
+        var next: ?FormatSeq = null;
+        var newFmt = fmt;
+        while (newFmt.len > 0) {
+            const fmtSeq = nextSeq(newFmt);
+
+            newFmt = fmtSeq.last;
+            next = fmtSeq.seq;
+            
+            if (next) |tag| {
+                switch (tag) {
+                    .MM => try writer.print("{:0>2}", .{months + 1}),
+                    .M => try writer.print("{}", .{months + 1}),
+                    .Mo => try writeOrdinal(writer, months + 1),
+                    .MMM => try writeLongName(writer, months, &short_month_names),
+                    .MMMM => try writeLongName(writer, months, &long_month_names),
+
+                    .Q => try writer.print("{}", .{months / 3 + 1}),
+                    .Qo => try writeOrdinal(writer, months / 3 + 1),
+
+                    .D => try writer.print("{}", .{days}),
+                    .Do => try writeOrdinal(writer, days),
+                    .DD => try writer.print("{:0>2}", .{days}),
+
+                    .DDD => try writer.print("{}", .{self.yearDay()}),
+                    .DDDo => try writeOrdinal(writer, self.yearDay()),
+                    .DDDD => try writer.print("{:0>3}", .{self.yearDay()}),
+
+                    .d => try writer.print("{}", .{@intFromEnum(self.weekday())}),
+                    .do => try writeOrdinal(writer, @as(u16, @intCast(@intFromEnum(self.weekday())))),
+                    .dd => try writer.writeAll(@tagName(self.weekday())[0..2]),
+                    .ddd => try writeLongName(writer, @as(u16, @intCast(@intFromEnum(self.weekday()))), &short_day_names),
+                    .dddd => try writer.writeAll(@tagName(self.weekday())),
+                    .e => try writer.print("{}", .{@intFromEnum(self.weekday())}),
+                    .E => try writer.print("{}", .{@intFromEnum(self.weekday()) + 1}),
+
+                    .w => try writer.print("{}", .{self.yearDay() / 7}),
+                    .wo => try writeOrdinal(writer, self.yearDay() / 7),
+                    .ww => try writer.print("{:0>2}", .{self.yearDay() / 7}),
+
+                    .Y => try writer.print("{}", .{years + 10000}),
+                    .YY => try writer.print("{:0>2}", .{years % 100}),
+                    .YYY => try writer.print("{}", .{years}),
+                    .YYYY => try writer.print("{:0>4}", .{years}),
+
+                    .A => try writeLongName(writer, hours / 12, &[_]string{ "AM", "PM" }),
+                    .a => try writeLongName(writer, hours / 12, &[_]string{ "am", "pm" }),
+
+                    .H => try writer.print("{}", .{hours}),
+                    .HH => try writer.print("{:0>2}", .{hours}),
+                    .h => try writer.print("{}", .{wrap(hours, 12)}),
+                    .hh => try writer.print("{:0>2}", .{wrap(hours, 12)}),
+                    .k => try writer.print("{}", .{wrap(hours, 24)}),
+                    .kk => try writer.print("{:0>2}", .{wrap(hours, 24)}),
+
+                    .m => try writer.print("{}", .{minutes}),
+                    .mm => try writer.print("{:0>2}", .{minutes}),
+
+                    .s => try writer.print("{}", .{seconds}),
+                    .ss => try writer.print("{:0>2}", .{seconds}),
+
+                    .S => try writer.print("{}", .{ms / 100}),
+                    .SS => try writer.print("{:0>2}", .{ms / 10}),
+                    .SSS => try writer.print("{:0>3}", .{ms}),
+
+                    .z => {
+                        const timezone = tz.string();
+                        try writer.writeAll(timezone);
+                    },
+                    .Z => {
+                        const timezone = tz.offsetFormatString();
+                        try writer.writeAll(timezone);
+                    },
+                    .ZZ => {
+                        const timezone = tz.offsetString();
+                        try writer.writeAll(timezone);
+                    },
+
+                    .x => try writer.print("{}", .{self.milliTimestamp()}),
+                    .X => try writer.print("{}", .{self.timestamp()}),
+                }
+                next = null;
+            } else {
+                try writer.writeAll(fmtSeq.value);
             }
-            const d = self.value - m.value + r.value;
-            if (d < self.value) {
-                return init(d);
-            }
-            return init(minDuration);
         }
+    }
 
-        if (r.lessThanHalf(m)) {
-            return init(self.value - r.value);
-        }
-        const d = self.value + m.value - r.value;
-        if (d > self.value) {
-            return init(d);
-        }
-        return init(maxDuration);
+    pub fn formatAlloc(self: Self, alloc: std.mem.Allocator, comptime fmt: string) !string {
+        var list = std.ArrayList(u8).init(alloc);
+        defer list.deinit();
+
+        try self.format(fmt, .{}, list.writer());
+        return list.toOwnedSlice();
     }
 };
 
-const normRes = struct {
-    hi: isize,
-    lo: isize,
+pub const FormatSeq = enum {
+    M, // 1 2 ... 11 12
+    Mo, // 1st 2nd ... 11th 12th
+    MM, // 01 02 ... 11 12
+    MMM, // Jan Feb ... Nov Dec
+    MMMM, // January February ... November December
+    Q, // 1 2 3 4
+    Qo, // 1st 2nd 3rd 4th
+    D, // 1 2 ... 30 31
+    Do, // 1st 2nd ... 30th 31st
+    DD, // 01 02 ... 30 31
+    DDD, // 1 2 ... 364 365
+    DDDo, // 1st 2nd ... 364th 365th
+    DDDD, // 001 002 ... 364 365
+    d, // 0 1 ... 5 6
+    do, // 0th 1st ... 5th 6th
+    dd, // Su Mo ... Fr Sa
+    ddd, // Sun Mon ... Fri Sat
+    dddd, // Sunday Monday ... Friday Saturday
+    e, // 0 1 ... 5 6 (locale)
+    E, // 1 2 ... 6 7 (ISO)
+    w, // 1 2 ... 52 53
+    wo, // 1st 2nd ... 52nd 53rd
+    ww, // 01 02 ... 52 53
+    Y, // 11970 11971 ... 19999 20000 20001 (Holocene calendar)
+    YY, // 70 71 ... 29 30
+    YYY, // 1 2 ... 1970 1971 ... 2029 2030
+    YYYY, // 0001 0002 ... 1970 1971 ... 2029 2030
+    A, // AM PM
+    a, // am pm
+    H, // 0 1 ... 22 23
+    HH, // 00 01 ... 22 23
+    h, // 1 2 ... 11 12
+    hh, // 01 02 ... 11 12
+    k, // 1 2 ... 23 24
+    kk, // 01 02 ... 23 24
+    m, // 0 1 ... 58 59
+    mm, // 00 01 ... 58 59
+    s, // 0 1 ... 58 59
+    ss, // 00 01 ... 58 59
+    S, // 0 1 ... 8 9 (second fraction)
+    SS, // 00 01 ... 98 99
+    SSS, // 000 001 ... 998 999
+    z, // EST CST ... MST PST
+    Z, // -07:00 -06:00 ... +06:00 +07:00
+    ZZ, // -0700 -0600 ... +0600 +0700
+    x, // unix milli
+    X, // unix
+
+    fn eql(self: FormatSeq, other: FormatSeq) bool {
+        return @intFromEnum(self) == @intFromEnum(other);
+    }
 };
 
-// norm returns nhi, nlo such that
-//  hi * base + lo == nhi * base + nlo
-//  0 <= nlo < base
+pub const Format = struct {
+    pub const LT = "h:mm A";
+    pub const LTS = "h:mm:ss A";
+    pub const L = "MM/DD/YYYY";
+    pub const l = "M/D/YYY";
+    pub const LL = "MMMM D, YYYY";
+    pub const ll = "MMM D, YYY";
+    pub const LLL = LL ++ " " ++ LT;
+    pub const lll = ll ++ " " ++ LT;
+    pub const LLLL = "dddd, " ++ LLL;
+    pub const llll = "ddd, " ++ lll;
 
-fn norm(i: isize, o: isize, base: isize) normRes {
-    var hi = i;
-    var lo = o;
-    if (lo < 0) {
-        const n = @divTrunc(-lo - 1, base) + 1;
-        hi -= n;
-        lo += (n * base);
-    }
-    if (lo >= base) {
-        const n = @divTrunc(lo, base);
-        hi += n;
-        lo -= (n * base);
-    }
-    return normRes{ .hi = hi, .lo = lo };
-}
+    pub const date = "YYYY-MM-DD";
+    pub const time = "HH:mm:ss";
+    pub const date_time = "YYYY-MM-DD HH:mm:ss";
+};
 
-/// date returns the Time corresponding to
-///  yyyy-mm-dd hh:mm:ss + nsec nanoseconds
-/// in the appropriate zone for that time in the given location.
-///
-/// The month, day, hour, min, sec, and nsec values may be outside
-/// their usual ranges and will be normalized during the conversion.
-/// For example, October 32 converts to November 1.
-///
-/// A daylight savings time transition skips or repeats times.
-/// For example, in the United States, March 13, 2011 2:15am never occurred,
-/// while November 6, 2011 1:15am occurred twice. In such cases, the
-/// choice of time zone, and therefore the time, is not well-defined.
-/// Date returns a time that is correct in one of the two zones involved
-/// in the transition, but it does not guarantee which.
-///
-/// Date panics if loc is nil.
+// timezone type list
+pub const GMT = Location.create(0, "GMT");
+pub const UTC = Location.create(0, "UTC");
+pub const CET = Location.create(60, "CET");
+pub const EET = Location.create(120, "EET");
+pub const MET = Location.create(210, "MET");
+pub const CTT = Location.create(480, "CTT");
+pub const CAT = Location.create(-60, "CAT");
+pub const EST = Location.create(-300, "EST");
+pub const MST = Location.create(-420, "MST");
+pub const CST = Location.create(-480, "CST");
+
+// new Time from date data
 pub fn date(
     year: isize,
     month: isize,
@@ -1913,40 +1169,30 @@ pub fn date(
     min: isize,
     sec: isize,
     nsec: isize,
-    loc: *Location,
+    loc: Location,
 ) Time {
-    var v_year = year;
-    var v_day = day;
-    var v_hour = hour;
-    var v_min = min;
-    var v_sec = sec;
-    var v_nsec = nsec;
-    // var v_loc = loc;
+    return Time.fromDatetime(year, month, day, hour, min, sec, nsec, loc);
+}
 
-    // Normalize month, overflowing into year
-    var m = month - 1;
-    var r = norm(v_year, m, 12);
-    v_year = r.hi;
-    m = r.lo;
-    var v_month = @as(Month, @enumFromInt(@as(usize, @intCast(m)) + 1));
+// now time
+pub fn now() Time {
+    return Time.now();
+}
 
-    // Normalize nsec, sec, min, hour, overflowing into day.
-    r = norm(sec, v_nsec, 1e9);
-    v_sec = r.hi;
-    v_nsec = r.lo;
-    r = norm(min, v_sec, 60);
-    v_min = r.hi;
-    v_sec = r.lo;
-    r = norm(v_hour, v_min, 60);
-    v_hour = r.hi;
-    v_min = r.lo;
-    r = norm(v_day, v_hour, 24);
-    v_day = r.hi;
-    v_hour = r.lo;
+// Since returns the time elapsed since t.
+// It is shorthand for time.now().sub(t).
+pub fn since(t: Time) Duration {
+	return now().sub(t);
+}
 
-    var y = @as(u64, @intCast(@as(i64, @intCast(v_year)) - absolute_zero_year));
+// Until returns the duration until t.
+// It is shorthand for t.sub(time.now()).
+pub fn until(t: Time) Duration {
+	return t.sub(now());
+}
 
-    // Compute days since the absolute epoch.
+fn daysSinceeEpoch(year: isize) u64 {
+    var y = @as(u64, @intCast(@as(i64, @intCast(year)) - absolute_zero_year));
 
     // Add in days from 400-year cycles.
     var n = @divTrunc(y, 400);
@@ -1967,44 +1213,352 @@ pub fn date(
     n = y;
     d += 365 * n;
 
-    // Add in days before this month.
-    d += @as(u64, @intCast(daysBefore[@intFromEnum(v_month) - 1]));
-    if (isLeap(v_year) and @intFromEnum(v_month) >= @intFromEnum(Month.March)) {
-        d += 1; // February 29
-    }
-
-    // Add in days before today.
-    d += @as(u64, @intCast(v_day - 1));
-
-    // Add in time elapsed today.
-    var abs = d * seconds_per_day;
-
-    abs += @as(u64, @intCast(hour * seconds_per_hour + min * seconds_per_minute + sec));
-
-    const ov = @mulWithOverflow(@as(i64, @bitCast(abs)), (absolute_to_internal + internal_to_unix));
-    var unix_value: i64 = ov[0];
-
-    // Look for zone offset for t, so we can adjust to UTC.
-    // The lookup function expects UTC, so we pass t in the
-    // hope that it will not be too close to a zone transition,
-    // and then adjust if it is.
-    var zn = loc.lookup(unix_value);
-    if (zn.offset != 0) {
-        const utc_value = unix_value - @as(i64, @intCast(zn.offset));
-        if (utc_value < zn.start) {
-            zn = loc.lookup(zn.start - 1);
-        } else if (utc_value >= zn.end) {
-            zn = loc.lookup(zn.end);
-        }
-        unix_value -= @as(i64, @intCast(zn.offset));
-    }
-    return unixTimeWithLoc(unix_value, @as(i32, @intCast(v_nsec)), loc);
+    return d;
 }
+
+const long_day_names = [_][]const u8{
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+};
+
+const short_day_names = [_]string{
+    "Sun",
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+};
+
+const short_month_names = [_]string{
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+};
+
+const long_month_names = [_]string{
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+};
+
+pub const Weekday = enum(usize) {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+
+    pub fn string(self: Weekday) []const u8 {
+        const d = @intFromEnum(self);
+        if (@intFromEnum(Weekday.Sunday) <= d and d <= @intFromEnum(Weekday.Saturday)) {
+            return long_day_names[d];
+        }
+        
+        unreachable;
+    }
+};
 
 /// ISO 8601 year and week number
 pub const ISOWeek = struct {
     year: isize,
     week: isize,
+};
+
+fn absWeekday(abs: u64) Weekday {
+    const s = @mod(abs + @as(u64, @intCast(@intFromEnum(Weekday.Monday))) * seconds_per_day, seconds_per_week);
+    const w = s / seconds_per_day;
+    return @as(Weekday, @enumFromInt(@as(usize, @intCast(w))));
+}
+
+const FracRes = struct {
+    nw: usize,
+    nv: u64,
+};
+
+fn fmtFrac(buf: []u8, value: u64, prec: usize) FracRes {
+    // Omit trailing zeros up to and including decimal point.
+    var w = buf.len;
+    var v = value;
+    var i: usize = 0;
+    var print: bool = false;
+    
+    while (i < prec) : (i += 1) {
+        const digit = @mod(v, 10);
+        print = print or digit != 0;
+        if (print) {
+            w -= 1;
+            buf[w] = @as(u8, @intCast(digit)) + '0';
+        }
+        v /= 10;
+    }
+    
+    if (print) {
+        w -= 1;
+        buf[w] = '.';
+    }
+    
+    return .{ 
+        .nw = w, 
+        .nv = v,
+    };
+}
+
+fn fmtInt(buf: []u8, value: u64) usize {
+    var w = buf.len;
+    var v = value;
+    if (v == 0) {
+        w -= 1;
+        buf[w] = '0';
+    } else {
+        while (v > 0) {
+            w -= 1;
+            buf[w] = @as(u8, @intCast(@mod(v, 10))) + '0';
+            v /= 10;
+        }
+    }
+    
+    return w;
+}
+
+pub const Duration = struct {
+    value: i64,
+
+    const Self = @This();
+    
+    pub const Nanosecond = init(1);
+    pub const Microsecond = init(1000 * Nanosecond.value);
+    pub const Millisecond = init(1000 * Microsecond.value);
+    pub const Second = init(1000 * Millisecond.value);
+    pub const Minute = init(60 * Second.value);
+    pub const Hour = init(60 * Minute.value);
+
+    pub const minDuration = init(-1 << 63);
+    pub const maxDuration = init((1 << 63) - 1);
+
+    // fmtFrac formats the fraction of v/10**prec (e.g., ".12345") into the
+    // tail of buf, omitting trailing zeros. It omits the decimal
+    // point too when the fraction is 0. It returns the index where the
+    // output bytes begin and the value v/10**prec.
+
+    pub fn init(v: i64) Duration {
+        return .{ 
+            .value = v,
+        };
+    }
+
+    pub fn string(self: Self) []const u8 {
+        var buf: [32]u8 = undefined;
+        var w = buf.len;
+        var u: u64 = undefined;
+        
+        const neg = self.value < 0;
+        if (neg) {
+            u = @as(u64, @intCast(-self.value));
+        } else {
+            u = @as(u64, @intCast(self.value));
+        }
+        
+        if (u < @as(u64, @intCast(Second.value))) {
+            // Special case: if duration is smaller than a second,
+            // use smaller units, like 1.2ms
+            var prec: usize = 0;
+            
+            w -= 1;
+            buf[w] = 's';
+            
+            w -= 1;
+            if (u == 0) {
+                const s = "0s";
+                return s[0..];
+            } else if (u < @as(u64, @intCast(Microsecond.value))) {
+                // print nanoseconds
+                prec = 0;
+                buf[w] = 'n';
+            } else if (u < @as(u64, @intCast(Millisecond.value))) {
+                // print microseconds
+                prec = 3;
+                // U+00B5 'µ' micro sign == 0xC2 0xB5
+                w -= 1;
+                @memcpy(buf[w..], "µ");
+            } else {
+                prec = 6;
+                buf[w] = 'm';
+            }
+            
+            const r = fmtFrac(buf[0..w], u, prec);
+            w = r.nw;
+            u = r.nv;
+            w = fmtInt(buf[0..w], u);
+        } else {
+            w -= 1;
+            buf[w] = 's';
+            const r = fmtFrac(buf[0..w], u, 9);
+            w = r.nw;
+            u = r.nv;
+            w = fmtInt(buf[0..w], @mod(u, 60));
+            u /= 60;
+            
+            // u is now integer minutes
+            if (u > 0) {
+                w -= 1;
+                buf[w] = 'm';
+                w = fmtInt(buf[0..w], @mod(u, 60));
+                u /= 60;
+                // u is now integer hours
+                // Stop at hours because days can be different lengths.
+                if (u > 0) {
+                    w -= 1;
+                    buf[w] = 'h';
+                    w = fmtInt(buf[0..w], u);
+                }
+            }
+        }
+        
+        if (neg) {
+            w -= 1;
+            buf[w] = '-';
+        }
+
+        const ww = w;
+        return buf[ww..];
+    }
+
+    /// nanoseconds returns the duration as an integer nanosecond count.
+    pub fn nanoseconds(self: Self) i64 {
+        return self.value;
+    }
+
+    /// microseconds returns the duration as an integer microsecond count.
+    pub fn microseconds(self: Self) i64 {
+        return @divTrunc(self.value, time.ns_per_us);
+    }
+
+    /// milliseconds returns the duration as an integer millisecond count.
+    pub fn milliseconds(self: Self) i64 {
+        return @divTrunc(self.value, time.ns_per_ms);
+    }
+    
+    // These methods return float64 because the dominant
+    // use case is for printing a floating point number like 1.5s, and
+    // a truncation to integer would make them not useful in those cases.
+    // Splitting the integer and fraction ourselves guarantees that
+    // converting the returned float64 to an integer rounds the same
+    // way that a pure integer conversion would have, even in cases
+    // where, say, float64(d.Nanoseconds())/1e9 would have rounded
+    // differently.
+
+    /// Seconds returns the duration as a floating point number of seconds.
+    pub fn seconds(self: Self) f64 {
+        const sec = @divTrunc(self.value, Second.value);
+        const nsec = @mod(self.value, Second.value);
+        return @as(f64, @floatFromInt(sec)) + @as(f64, @floatFromInt(nsec)) / 1e9;
+    }
+
+    /// Minutes returns the duration as a floating point number of minutes.
+    pub fn minutes(self: Self) f64 {
+        const min = @divTrunc(self.value, Minute.value);
+        const nsec = @mod(self.value, Minute.value);
+        return @as(f64, @floatFromInt(min)) + @as(f64, @floatFromInt(nsec)) / (60 * 1e9);
+    }
+
+    /// Hours returns the duration as a floating point number of hours.
+    pub fn hours(self: Self) f64 {
+        const hour = @divTrunc(self.value, Hour.value);
+        const nsec = @mod(self.value, Hour.value);
+        return @as(f64, @floatFromInt(hour)) + @as(f64, @floatFromInt(nsec)) / (60 * 60 * 1e9);
+    }
+
+    /// Truncate returns the result of rounding d toward zero to a multiple of m.
+    /// If m <= 0, Truncate returns d unchanged.
+    pub fn truncate(self: Self, m: Self) Duration {
+        if (m.value <= 0) {
+            return self;
+        }
+        
+        return init(self.value - @mod(self.value, m.value));
+    }
+
+    /// lessThanHalf reports whether x+x < y but avoids overflow,
+    /// assuming x and y are both positive (Duration is signed).
+    fn lessThanHalf(self: Self, m: Self) bool {
+        const x = @as(u64, @intCast(self.value));
+        return x + x < @as(u64, @intCast(m.value));
+    }
+
+    /// Round returns the result of rounding d to the nearest multiple of m.
+    /// The rounding behavior for halfway values is to round away from zero.
+    /// If the result exceeds the maximum (or minimum)
+    /// value that can be stored in a Duration,
+    /// Round returns the maximum (or minimum) duration.
+    /// If m <= 0, Round returns d unchanged.
+    pub fn round(self: Self, m: Self) Duration {
+        if (m.value <= 0) {
+            return self;
+        }
+
+        var r = init(@mod(self.value, m.value));
+        if (self.value < 0) {
+            r.value = -r.value;
+            if (r.lessThanHalf(m)) {
+                return init(self.value + r.value);
+            }
+            
+            const d = self.value - m.value + r.value;
+            if (d < self.value) {
+                return init(d);
+            }
+            
+            return minDuration;
+        }
+
+        if (r.lessThanHalf(m)) {
+            return init(self.value - r.value);
+        }
+        
+        const d = self.value + m.value - r.value;
+        if (d > self.value) {
+            return init(d);
+        }
+        
+        return maxDuration;
+    }
+
+    pub fn abs(self: Self) Duration {
+        if (self.value >= 0) {
+            return self;
+        } else if (self.value == minDuration.value) {
+            return maxDuration;
+        } else {
+            return Duration.init(-self.value);
+        }
+    }
 };
 
 pub const Clock = struct {
@@ -2014,64 +1568,96 @@ pub const Clock = struct {
 
     fn absClock(abs: u64) Clock {
         var sec = @as(isize, @intCast(abs % seconds_per_day));
-        var hour = @divTrunc(sec, seconds_per_hour);
+        const hour = @divTrunc(sec, seconds_per_hour);
         sec -= (hour * seconds_per_hour);
-        var min = @divTrunc(sec, seconds_per_minute);
+        const min = @divTrunc(sec, seconds_per_minute);
         sec -= (min * seconds_per_minute);
-        return Clock{ .hour = hour, .min = min, .sec = sec };
+        
+        return .{ 
+            .hour = hour, 
+            .min = min, 
+            .sec = sec,
+         };
     }
 };
 
-fn absWeekday(abs: u64) Weekday {
-    const s = @mod(abs + @as(u64, @intCast(@intFromEnum(Weekday.Monday))) * seconds_per_day, seconds_per_week);
-    const w = s / seconds_per_day;
-    return @as(Weekday, @enumFromInt(@as(usize, @intCast(w))));
+const NormRes = struct {
+    hi: isize,
+    lo: isize,
+};
+
+// norm returns nhi, nlo such that
+//  hi * base + lo == nhi * base + nlo
+//  0 <= nlo < base
+fn norm(i: isize, o: isize, base: isize) NormRes {
+    var hi = i;
+    var lo = o;
+    if (lo < 0) {
+        const n = @divTrunc(-lo - 1, base) + 1;
+        hi -= n;
+        lo += (n * base);
+    }
+    
+    if (lo >= base) {
+        const n = @divTrunc(lo, base);
+        hi += n;
+        lo -= (n * base);
+    }
+    
+    return .{ 
+        .hi = hi, 
+        .lo = lo,
+    };
 }
 
-pub const Month = enum(usize) {
-    January = 1,
-    February = 2,
-    March = 3,
-    April = 4,
-    May = 5,
-    June = 6,
-    July = 7,
-    August = 8,
-    September = 9,
-    October = 10,
-    November = 11,
-    December = 12,
+const nsec_mask: u64 = (1 << 30) - 1;
 
-    pub fn string(self: Month) []const u8 {
-        const m = @intFromEnum(self);
-        if (@intFromEnum(Month.January) <= m and m <= @intFromEnum(Month.December)) {
-            return months[m - 1];
-        }
-        unreachable;
-    }
-
-    pub fn format(
-        self: Month,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        out_stream: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
-        try out_stream.writeAll(self.string());
-    }
+const daysBefore = [_]isize{
+    0,
+    31,
+    31 + 28,
+    31 + 28 + 31,
+    31 + 28 + 31 + 30,
+    31 + 28 + 31 + 30 + 31,
+    31 + 28 + 31 + 30 + 31 + 30,
+    31 + 28 + 31 + 30 + 31 + 30 + 31,
+    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31,
+    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30,
+    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31,
+    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30,
+    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30 + 31,
 };
+
+const seconds_per_minute = 60;
+const seconds_per_hour = 60 * seconds_per_minute;
+const seconds_per_day = 24 * seconds_per_hour;
+const seconds_per_week = 7 * seconds_per_day;
+const days_per_400_years = 365 * 400 + 97;
+const days_per_100_years = 365 * 100 + 24;
+const days_per_4_years = 365 * 4 + 1;
+const absolute_zero_year: i64 = -292277022399;
+
+// The year of the zero Time.
+// Assumed by the unix_to_internal computation below.
+const internal_year: i64 = 1;
+
+const unix_to_internal: i64 = (1969 * 365 + 1969 / 4 - 1969 / 100 + 1969 / 400) * seconds_per_day;
+const internal_to_unix: i64 = -unix_to_internal;
+
+// Offsets to convert between internal and absolute or Unix times.
+const absolute_to_internal: i64 = (absolute_zero_year - internal_year) * @as(i64, @intFromFloat(365.2425 * @as(f64, @floatFromInt(seconds_per_day))));
+const internal_to_absolute = -absolute_to_internal;
 
 pub const DateDetail = struct {
     year: isize,
-    month: Month,
+    month: epoch.Month,
     day: isize,
     yday: isize,
 };
 
 fn absDate(abs: u64, full: bool) DateDetail {
     var details: DateDetail = undefined;
+    
     // Split into time and day.
     var d = abs / seconds_per_day;
 
@@ -2109,14 +1695,15 @@ fn absDate(abs: u64, full: bool) DateDetail {
     if (!full) {
         return details;
     }
+    
     details.day = details.yday;
-    if (isLeap(details.year)) {
+    if (epoch.isLeapYear(@as(epoch.Year, @intCast(details.year)))) {
         if (details.day > (31 + 29 - 1)) {
             // After leap day; pretend it wasn't there.
             details.day -= 1;
         } else if (details.day == (31 + 29 - 1)) {
             // Leap day.
-            details.month = Month.February;
+            details.month = epoch.Month.feb;
             details.day = 29;
             return details;
         }
@@ -2133,628 +1720,96 @@ fn absDate(abs: u64, full: bool) DateDetail {
     } else {
         begin = daysBefore[month];
     }
+    
     month += 1;
     details.day = details.day - begin + 1;
-    details.month = @as(Month, @enumFromInt(month));
+    details.month = @as(epoch.Month, @enumFromInt(month));
     return details;
 }
 
-// daysBefore[m] counts the number of days in a non-leap year
-// before month m begins. There is an entry for m=12, counting
-// the number of days before January of next year (365).
-
-const daysBefore = [_]isize{
-    0,
-    31,
-    31 + 28,
-    31 + 28 + 31,
-    31 + 28 + 31 + 30,
-    31 + 28 + 31 + 30 + 31,
-    31 + 28 + 31 + 30 + 31 + 30,
-    31 + 28 + 31 + 30 + 31 + 30 + 31,
-    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31,
-    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30,
-    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31,
-    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30,
-    31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30 + 31,
-};
-
-fn isLeap(year: isize) bool {
-    return @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 100) == 0);
+fn writeOrdinal(writer: anytype, num: u16) !void {
+    try writer.print("{}", .{num});
+    try writer.writeAll(switch (num) {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        else => "th",
+    });
 }
 
-const months = [_][]const u8{
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+fn writeLongName(writer: anytype, index: u16, names: []const string) !void {
+    try writer.writeAll(names[index]);
+}
+
+const Number = struct {
+    value: isize,
+    string: []const u8,
 };
 
-pub const Weekday = enum(usize) {
-    Sunday,
-    Monday,
-    Tuesday,
-    Wednesday,
-    Thursday,
-    Friday,
-    Saturday,
+fn getNumFromOrdinal(val: string) !Number {
+    const n = try getNum3(val, false);
+    const value = n.value;
+    const last = n.string;
 
-    pub fn string(self: Weekday) []const u8 {
-        const d = @intFromEnum(self);
-        if (@intFromEnum(Weekday.Sunday) <= d and d <= @intFromEnum(Weekday.Saturday)) {
-            return days[d];
-        }
-        unreachable;
+    const se = last[0..2];
+
+    var res: bool = false;
+    if (equal(se, "st") or equal(se, "nd") or equal(se, "rd") or equal(se, "th")) {
+        res = true;
     }
 
-    pub fn format(
-        self: Weekday,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        out_stream: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
-        try out_stream(context, self.string());
-    }
-};
-
-const days = [_][]const u8{
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-};
-
-/// now returns the current local time and assigns the retuned time to use
-/// local as location data.
-pub fn now(local: *Location) Time {
-    const bt = timeNow();
-    const sec = (bt.sec + unix_to_internal) - min_wall;
-    if ((@as(u64, @intCast(sec)) >> 33) != 0) {
-        return Time{
-            .wall = @as(u64, @intCast(bt.nsec)),
-            .ext = sec + min_wall,
-            .loc = local,
+    if (res) {
+        return .{
+            .value = value,
+            .string = last[2..],
         };
     }
-    return Time{
-        .wall = has_monotonic | (@as(u64, @intCast(sec)) << nsec_shift) | @as(u64, @intCast(bt.nsec)),
-        .ext = @as(i64, @intCast(bt.mono)),
-        .loc = local,
-    };
+
+    return error.BadValue;
 }
 
-fn unixTime(sec: i64, nsec: i32) Time {
-    var local = Location.getLocal();
-    return unixTimeWithLoc(sec, nsec, local);
+fn wrap(val: u16, at: u16) u16 {
+    const tmp = val % at;
+    return if (tmp == 0) at else tmp;
 }
 
-fn unixTimeWithLoc(sec: i64, nsec: i32, loc: *Location) Time {
-    return Time{
-        .wall = @as(u64, @intCast(nsec)),
-        .ext = sec + unix_to_internal,
-        .loc = loc,
-    };
-}
+const SeqResut = struct {
+    seq: ?FormatSeq,
+    value: []const u8,
+    last: []const u8,
+};
 
-pub fn unix(sec: i64, nsec: i64, local: *Location) Time {
-    var x = sec;
-    var y = nsec;
-    if (nsec < 0 or nsec >= @as(i64, 1e9)) {
-        const n = @divTrunc(nsec, @as(i64, 1e9));
-        x += n;
-        y -= (n * @as(i64, 1e9));
-        if (y < 0) {
-            y += @as(i64, 1e9);
-            x -= 1;
-        }
+fn nextSeq(fmt: []const u8) SeqResut {
+    var next: ?FormatSeq = null;
+    var maxLen: usize = 0;
+
+    if (fmt.len < 4) {
+        maxLen = fmt.len;
+    } else {
+        maxLen = 4;
     }
-    return unixTimeWithLoc(x, @as(i32, @intCast(y)), local);
-}
-
-const bintime = struct {
-    sec: isize,
-    nsec: isize,
-    mono: u64,
-};
-
-fn timeNow() bintime {
-    switch (builtin.os.tag) {
-        .linux => {
-            var ts: std.os.timespec = undefined;
-            // const err = std.os.clock_gettime(std.os.CLOCK_REALTIME, &ts) catch unreachable;
-            return bintime{ .sec = ts.tv_sec, .nsec = ts.tv_nsec, .mono = clockNative() };
-        },
-        .macos, .ios => {
-            var tv: darwin.timeval = undefined;
-            var err = darwin.gettimeofday(&tv, null);
-            assert(err == 0);
-            return bintime{ .sec = tv.tv_sec, .nsec = tv.tv_usec, .mono = clockNative() };
-        },
-        else => @compileError("Unsupported OS"),
-    }
-}
-
-const clockNative = switch (builtin.os.tag) {
-    .windows => clockWindows,
-    .linux => clockLinux,
-    .macos, .ios => clockDarwin,
-    else => @compileError("Unsupported OS"),
-};
-
-fn clockWindows() u64 {
-    var result: i64 = undefined;
-    var err = windows.QueryPerformanceCounter(&result);
-    assert(err != windows.FALSE);
-    return @as(u64, @intCast(result));
-}
-
-fn clockDarwin() u64 {
-    return darwin.mach_absolute_time();
-}
-
-fn clockLinux() u64 {
-    var ts: std.os.timespec = undefined;
-    var result = std.os.linux.clock_gettime(std.os.CLOCK_MONOTONIC, &ts);
-    assert(std.os.linux.getErrno(result) == 0);
-    return @as(u64, @intCast(ts.tv_sec)) * @as(u64, 1000000000) + @as(u64, @intCast(ts.tv_nsec));
-}
-
-// These are predefined layouts for use in Time.Format and time.Parse.
-// The reference time used in the layouts is the specific time:
-//  Mon Jan 2 15:04:05 MST 2006
-// which is Unix time 1136239445. Since MST is GMT-0700,
-// the reference time can be thought of as
-//  01/02 03:04:05PM '06 -0700
-// To define your own format, write down what the reference time would look
-// like formatted your way; see the values of constants like ANSIC,
-// StampMicro or Kitchen for examples. The model is to demonstrate what the
-// reference time looks like so that the Format and Parse methods can apply
-// the same transformation to a general time value.
-//
-// Some valid layouts are invalid time values for time.Parse, due to formats
-// such as _ for space padding and Z for zone information.
-//
-// Within the format string, an underscore _ represents a space that may be
-// replaced by a digit if the following number (a day) has two digits; for
-// compatibility with fixed-width Unix time formats.
-//
-// A decimal point followed by one or more zeros represents a fractional
-// second, printed to the given number of decimal places. A decimal point
-// followed by one or more nines represents a fractional second, printed to
-// the given number of decimal places, with trailing zeros removed.
-// When parsing (only), the input may contain a fractional second
-// field immediately after the seconds field, even if the layout does not
-// signify its presence. In that case a decimal point followed by a maximal
-// series of digits is parsed as a fractional second.
-//
-// Numeric time zone offsets format as follows:
-//  -0700  ±hhmm
-//  -07:00 ±hh:mm
-//  -07    ±hh
-// Replacing the sign in the format with a Z triggers
-// the ISO 8601 behavior of printing Z instead of an
-// offset for the UTC zone. Thus:
-//  Z0700  Z or ±hhmm
-//  Z07:00 Z or ±hh:mm
-//  Z07    Z or ±hh
-//
-// The recognized day of week formats are "Mon" and "Monday".
-// The recognized month formats are "Jan" and "January".
-//
-// Text in the format string that is not recognized as part of the reference
-// time is echoed verbatim during Format and expected to appear verbatim
-// in the input to Parse.
-//
-// The executable example for Time.Format demonstrates the working
-// of the layout string in detail and is a good reference.
-//
-// Note that the RFC822, RFC850, and RFC1123 formats should be applied
-// only to local times. Applying them to UTC times will use "UTC" as the
-// time zone abbreviation, while strictly speaking those RFCs require the
-// use of "GMT" in that case.
-// In general RFC1123Z should be used instead of RFC1123 for servers
-// that insist on that format, and RFC3339 should be preferred for new protocols.
-// RFC3339, RFC822, RFC822Z, RFC1123, and RFC1123Z are useful for formatting;
-// when used with time.Parse they do not accept all the time formats
-// permitted by the RFCs.
-// The RFC3339Nano format removes trailing zeros from the seconds field
-// and thus may not sort correctly once formatted.
-
-pub const ANSIC = "Mon Jan _2 15:04:05 2006";
-pub const UnixDate = "Mon Jan _2 15:04:05 MST 2006";
-pub const RubyDate = "Mon Jan 02 15:04:05 -0700 2006";
-pub const RFC822 = "02 Jan 06 15:04 MST";
-pub const RFC822Z = "02 Jan 06 15:04 -0700"; // RFC822 with numeric zone
-pub const RFC850 = "Monday, 02-Jan-06 15:04:05 MST";
-pub const RFC1123 = "Mon, 02 Jan 2006 15:04:05 MST";
-pub const RFC1123Z = "Mon, 02 Jan 2006 15:04:05 -0700"; // RFC1123 with numeric zone
-pub const RFC3339 = "2006-01-02T15:04:05Z07:00";
-pub const RFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00";
-pub const Kitchen = "3:04PM";
-// Handy time stamps.
-pub const Stamp = "Jan _2 15:04:05";
-pub const StampMilli = "Jan _2 15:04:05.000";
-pub const StampMicro = "Jan _2 15:04:05.000000";
-pub const StampNano = "Jan _2 15:04:05.000000000";
-
-pub const DefaultFormat = "2006-01-02 15:04:05.999999999 -0700 MST";
-
-pub const chunk = enum {
-    none,
-    stdLongMonth, // "January"
-    stdMonth, // "Jan"
-    stdNumMonth, // "1"
-    stdZeroMonth, // "01"
-    stdLongWeekDay, // "Monday"
-    stdWeekDay, // "Mon"
-    stdDay, // "2"
-    stdUnderDay, // "_2"
-    stdZeroDay, // "02"
-    stdUnderYearDay, // "__2"
-    stdZeroYearDay, // "002"
-    stdHour, // "15"
-    stdHour12, // "3"
-    stdZeroHour12, // "03"
-    stdMinute, // "4"
-    stdZeroMinute, // "04"
-    stdSecond, // "5"
-    stdZeroSecond, // "05"
-    stdLongYear, // "2006"
-    stdYear, // "06"
-    stdPM, // "PM"
-    stdpm, // "pm"
-    stdTZ, // "MST"
-    stdISO8601TZ, // "Z0700"  // prints Z for UTC
-    stdISO8601SecondsTZ, // "Z070000"
-    stdISO8601ShortTZ, // "Z07"
-    stdISO8601ColonTZ, // "Z07:00" // prints Z for UTC
-    stdISO8601ColonSecondsTZ, // "Z07:00:00"
-    stdNumTZ, // "-0700"  // always numeric
-    stdNumSecondsTz, // "-070000"
-    stdNumShortTZ, // "-07"    // always numeric
-    stdNumColonTZ, // "-07:00" // always numeric
-    stdNumColonSecondsTZ, // "-07:00:00"
-    stdFracSecond0, // ".0", ".00", ... , trailing zeros included
-    stdFracSecond9, // ".9", ".99", ..., trailing zeros omitted
-
-    stdNeedDate, // need month, day, year
-    stdNeedClock, // need hour, minute, second
-    stdArgShift, // extra argument in high bits, above low stdArgShift
-
-    fn eql(self: chunk, other: chunk) bool {
-        return @intFromEnum(self) == @intFromEnum(other);
-    }
-};
-
-// startsWithLowerCase reports whether the string has a lower-case letter at the beginning.
-// Its purpose is to prevent matching strings like "Month" when looking for "Mon".
-
-fn startsWithLowerCase(str: []const u8) bool {
-    if (str.len == 0) {
-        return false;
-    }
-    const c = str[0];
-    return 'a' <= c and c <= 'z';
-}
-
-pub const chunkResult = struct {
-    prefix: []const u8,
-    suffix: []const u8,
-    chunk: chunk,
-    args_shift: ?usize,
-};
-
-const std0x = [_]chunk{
-    chunk.stdZeroMonth,
-    chunk.stdZeroDay,
-    chunk.stdZeroHour12,
-    chunk.stdZeroMinute,
-    chunk.stdZeroSecond,
-    chunk.stdYear,
-};
-
-pub fn nextStdChunk(layout: []const u8) chunkResult {
-    var i: usize = 0;
-    while (i < layout.len) : (i += 1) {
-        switch (layout[i]) {
-            'J' => { // January, Jan
-                if ((layout.len >= i + 3) and mem.eql(u8, layout[i .. i + 3], "Jan")) {
-                    if ((layout.len >= i + 7) and mem.eql(u8, layout[i .. i + 7], "January")) {
-                        return chunkResult{
-                            .prefix = layout[0..i],
-                            .chunk = chunk.stdLongMonth,
-                            .suffix = layout[i + 7 ..],
-                            .args_shift = null,
-                        };
-                    }
-                    if (!startsWithLowerCase(layout[i + 3 ..])) {
-                        return chunkResult{
-                            .prefix = layout[0..i],
-                            .chunk = chunk.stdMonth,
-                            .suffix = layout[i + 3 ..],
-                            .args_shift = null,
-                        };
-                    }
-                }
-            },
-            'M' => { // Monday, Mon, MST
-                if (layout.len >= 1 + 3) {
-                    if (mem.eql(u8, layout[i .. i + 3], "Mon")) {
-                        if ((layout.len >= i + 6) and mem.eql(u8, layout[i .. i + 6], "Monday")) {
-                            return chunkResult{
-                                .prefix = layout[0..i],
-                                .chunk = chunk.stdLongWeekDay,
-                                .suffix = layout[i + 6 ..],
-                                .args_shift = null,
-                            };
-                        }
-                        if (!startsWithLowerCase(layout[i + 3 ..])) {
-                            return chunkResult{
-                                .prefix = layout[0..i],
-                                .chunk = chunk.stdWeekDay,
-                                .suffix = layout[i + 3 ..],
-                                .args_shift = null,
-                            };
-                        }
-                    }
-                    if (mem.eql(u8, layout[i .. i + 3], "MST")) {
-                        return chunkResult{
-                            .prefix = layout[0..i],
-                            .chunk = chunk.stdTZ,
-                            .suffix = layout[i + 3 ..],
-                            .args_shift = null,
-                        };
-                    }
-                }
-            },
-            '0' => { // 01, 02, 03, 04, 05, 06, 002
-                if (layout.len >= i + 2 and '1' <= layout[i + 1] and layout[i + 1] <= '6') {
-                    const x = layout[i + 1] - '1';
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = std0x[x],
-                        .suffix = layout[i + 2 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 3 and layout[i + 1] == '0' and layout[i + 2] == '2') {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = .stdZeroYearDay,
-                        .suffix = layout[i + 3 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            '1' => { // 15, 1
-                if (layout.len >= i + 2 and layout[i + 1] == '5') {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdHour,
-                        .suffix = layout[i + 2 ..],
-                        .args_shift = null,
-                    };
-                }
-                return chunkResult{
-                    .prefix = layout[0..i],
-                    .chunk = chunk.stdNumMonth,
-                    .suffix = layout[i + 1 ..],
-                    .args_shift = null,
-                };
-            },
-            '2' => { // 2006, 2
-                if (layout.len >= i + 4 and mem.eql(u8, layout[i .. i + 4], "2006")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdLongYear,
-                        .suffix = layout[i + 4 ..],
-                        .args_shift = null,
-                    };
-                }
-                return chunkResult{
-                    .prefix = layout[0..i],
-                    .chunk = chunk.stdDay,
-                    .suffix = layout[i + 1 ..],
-                    .args_shift = null,
-                };
-            },
-            '_' => { // _2, _2006, __2
-                if (layout.len >= i + 4 and layout[i + 1] == '2') {
-                    //_2006 is really a literal _, followed by stdLongYear
-                    if (layout.len >= i + 5 and mem.eql(u8, layout[i + 1 .. i + 5], "2006")) {
-                        return chunkResult{
-                            .prefix = layout[0..i],
-                            .chunk = chunk.stdLongYear,
-                            .suffix = layout[i + 5 ..],
-                            .args_shift = null,
-                        };
-                    }
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdUnderDay,
-                        .suffix = layout[i + 2 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 3 and layout[i + 1] == '_' and layout[i + 2] == '2') {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = .stdUnderYearDay,
-                        .suffix = layout[i + 3 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            '3' => {
-                return chunkResult{
-                    .prefix = layout[0..i],
-                    .chunk = chunk.stdHour12,
-                    .suffix = layout[i + 1 ..],
-                    .args_shift = null,
-                };
-            },
-            '4' => {
-                return chunkResult{
-                    .prefix = layout[0..i],
-                    .chunk = chunk.stdMinute,
-                    .suffix = layout[i + 1 ..],
-                    .args_shift = null,
-                };
-            },
-            '5' => {
-                return chunkResult{
-                    .prefix = layout[0..i],
-                    .chunk = chunk.stdSecond,
-                    .suffix = layout[i + 1 ..],
-                    .args_shift = null,
-                };
-            },
-            'P' => { // PM
-                if (layout.len >= i + 2 and layout[i + 1] == 'M') {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdPM,
-                        .suffix = layout[i + 2 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            'p' => { // pm
-                if (layout.len >= i + 2 and layout[i + 1] == 'm') {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdpm,
-                        .suffix = layout[i + 2 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            '-' => {
-                if (layout.len >= i + 7 and mem.eql(u8, layout[i .. i + 7], "-070000")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdNumSecondsTz,
-                        .suffix = layout[i + 7 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 9 and mem.eql(u8, layout[i .. i + 9], "-07:00:00")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdNumColonSecondsTZ,
-                        .suffix = layout[i + 9 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 5 and mem.eql(u8, layout[i .. i + 5], "-0700")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdNumTZ,
-                        .suffix = layout[i + 5 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 6 and mem.eql(u8, layout[i .. i + 6], "-07:00")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdNumColonTZ,
-                        .suffix = layout[i + 6 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 3 and mem.eql(u8, layout[i .. i + 3], "-07")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdNumShortTZ,
-                        .suffix = layout[i + 3 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            'Z' => { // Z070000, Z07:00:00, Z0700, Z07:00,
-                if (layout.len >= i + 7 and mem.eql(u8, layout[i .. i + 7], "Z070000")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdISO8601SecondsTZ,
-                        .suffix = layout[i + 7 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 9 and mem.eql(u8, layout[i .. i + 9], "Z07:00:00")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdISO8601ColonSecondsTZ,
-                        .suffix = layout[i + 9 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 5 and mem.eql(u8, layout[i .. i + 5], "Z0700")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdISO8601TZ,
-                        .suffix = layout[i + 5 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 6 and mem.eql(u8, layout[i .. i + 6], "Z07:00")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdISO8601ColonTZ,
-                        .suffix = layout[i + 6 ..],
-                        .args_shift = null,
-                    };
-                }
-                if (layout.len >= i + 3 and mem.eql(u8, layout[i .. i + 3], "Z07")) {
-                    return chunkResult{
-                        .prefix = layout[0..i],
-                        .chunk = chunk.stdISO8601ShortTZ,
-                        .suffix = layout[i + 6 ..],
-                        .args_shift = null,
-                    };
-                }
-            },
-            '.' => { // .000 or .999 - repeated digits for fractional seconds.
-                if (i + 1 < layout.len and (layout[i + 1] == '0' or layout[i + 1] == '9')) {
-                    const ch = layout[i + 1];
-                    var j = i + 1;
-                    while (j < layout.len and layout[j] == ch) : (j += 1) {}
-                    if (!isDigit(layout, j)) {
-                        var st = chunk.stdFracSecond0;
-                        if (layout[i + 1] == '9') {
-                            st = chunk.stdFracSecond9;
-                        }
-                        return chunkResult{
-                            .prefix = layout[0..i],
-                            .chunk = st,
-                            .suffix = layout[j..],
-                            .args_shift = j - (i + 1),
-                        };
-                    }
-                }
-            },
-            else => {},
+    
+    var i: usize = 1;
+    var lock: usize = 1;
+    while (i <= maxLen) : (i += 1) {
+        if (std.meta.stringToEnum(FormatSeq, fmt[0..i])) |tag| {
+            next = tag;
+            lock = i;
         }
     }
 
-    return chunkResult{
-        .prefix = layout,
-        .chunk = chunk.none,
-        .suffix = "",
-        .args_shift = null,
+    if (next) |tag| {
+        return .{
+            .seq = tag,
+            .value = fmt[0..lock],
+            .last = fmt[lock..],
+        };
+    }
+
+    return .{
+        .seq = null,
+        .value = fmt[0..1],
+        .last = fmt[1..],
     };
 }
 
@@ -2762,79 +1817,53 @@ fn isDigit(s: []const u8, i: usize) bool {
     if (s.len <= i) {
         return false;
     }
+    
     const c = s[i];
     return '0' <= c and c <= '9';
 }
 
-const long_day_names = [_][]const u8{
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-};
+// startsWithLowerCase reports whether the string has a lower-case letter at the beginning.
+// Its purpose is to prevent matching strings like "Month" when looking for "Mon".
+fn startsWithLowerCase(str: []const u8) bool {
+    if (str.len == 0) {
+        return false;
+    }
+    
+    const c = str[0];
+    return 'a' <= c and c <= 'z';
+}
 
-const short_day_names = [_][]const u8{
-    "Sun",
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-    "Sat",
-};
+// if a == b, return true
+fn equal(a: string, b: string) bool {
+    if (mem.eql(u8, a, b)) {
+        return true;
+    }
 
-const short_month_names = [_][]const u8{
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-};
-
-const long_month_names = [_][]const u8{
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-};
+    return false;
+}
 
 // match reports whether s1 and s2 match ignoring case.
 // It is assumed s1 and s2 are the same length.
-
 fn match(s1: []const u8, s2: []const u8) bool {
     if (s1.len != s2.len) {
         return false;
     }
+    
     var i: usize = 0;
     while (i < s1.len) : (i += 1) {
         var c1 = s1[i];
         var c2 = s2[i];
+        
         if (c1 != c2) {
             c1 |= ('a' - 'A');
             c2 |= ('a' - 'A');
+            
             if (c1 != c2 or c1 < 'a' or c1 > 'z') {
                 return false;
             }
         }
     }
+    
     return true;
 }
 
@@ -2844,13 +1873,9 @@ fn lookup(tab: []const []const u8, val: []const u8) !usize {
             return i;
         }
     }
+    
     return error.BadValue;
 }
-
-const Number = struct {
-    value: isize,
-    string: []const u8,
-};
 
 // getnum parses s[0:1] or s[0:2] (fixed forces s[0:2])
 // as a decimal integer and returns the integer and the
@@ -2859,19 +1884,22 @@ fn getNum(s: []const u8, fixed: bool) !Number {
     if (!isDigit(s, 0)) {
         return error.BadData;
     }
+    
     if (!isDigit(s, 1)) {
         if (fixed) {
             return error.BadData;
         }
-        return Number{
+        
+        return .{
             .value = @as(isize, @intCast(s[0])) - '0',
             .string = s[1..],
         };
     }
+    
     const n = (@as(isize, @intCast(s[0])) - '0') * 10 + (@as(isize, @intCast(s[1])) - '0');
-    return Number{
+    return .{
         .value = n,
-        .string = s[1..],
+        .string = s[2..],
     };
 }
 
@@ -2884,12 +1912,57 @@ fn getNum3(s: []const u8, fixed: bool) !Number {
     while (i < 3 and isDigit(s, i)) : (i += 1) {
         n = n * 10 + @as(isize, @intCast(s[i] - '0'));
     }
-    if (i == 0 or fixed and i != 3) {
+    
+    if (i == 0 or (fixed and i != 3)) {
         return error.BadData;
     }
-    return Number{
+    
+    return .{
         .value = n,
         .string = s[i..],
+    };
+}
+
+fn parseTimezone(s: []const u8) !Number {
+    var is_neg: bool = false;
+    var h: isize = 0;
+    var m: isize = 0;
+
+    var str = s;
+
+    if (str.len < 5 or (str[0] != '-' and str[0] != '+')) {
+        return error.BadData;
+    }
+    
+    if (str[0] == '-') {
+        is_neg = true;
+    }
+    str = str[1..];
+    
+    const hh = try getNum(str, true);
+    h = hh.value;
+    str = hh.string;
+
+    if (str[0] == ':') {
+        str = str[1..];
+
+        if (str.len < 2) {
+            return error.BadData;
+        }
+    }
+    
+    const mm = try getNum(str, true);
+    m = mm.value;
+    str = mm.string;
+
+    var oo = h * 60 + m;
+    if (is_neg) {
+        oo = -oo;
+    }
+    
+    return .{
+        .value = oo,
+        .string = str,
     };
 }
 
@@ -2897,30 +1970,882 @@ fn parseNanoseconds(value: []const u8, nbytes: usize) !isize {
     if (value[0] != '.') {
         return error.BadData;
     }
+    
     var ns = try std.fmt.parseInt(isize, value[1..nbytes], 10);
     const nf = @as(f64, @floatFromInt(ns));
     if (nf < 0 or 1e9 <= nf) {
         return error.BadFractionalRange;
     }
+    
     const scale_digits = 10 - nbytes;
     var i: usize = 0;
     while (i < scale_digits) : (i += 1) {
         ns *= 10;
     }
+    
     return ns;
 }
 
-const Fraction = struct {
-    x: 164,
-    scale: f64,
-    rem: []const u8,
-};
+test "now" {
+    const margin = time.ns_per_ms * 50;
 
-fn leadingFraction(s: []const u8) !Fraction {
-    var i: usize = 0;
-    // var scale: f64 = 1;
-    // var overflow = false;
-    while (i < s.len) : (i += 1) {
-        //TODO(gernest): finish leadingFraction
+    // std.debug.print("{d}", .{now().milliTimestamp()});
+
+    const time_0 = now().milliTimestamp();
+    time.sleep(time.ns_per_ms);
+    const time_1 = now().milliTimestamp();
+    const interval = time_1 - time_0;
+    
+    try testing.expect(interval > 0);
+
+    const now_t = now();
+    try testing.expect(now_t.timestamp() > 0);
+    try testing.expect(now_t.milliTimestamp() > 0);
+    try testing.expect(now_t.microTimestamp() > 0);
+    try testing.expect(now_t.nanoTimestamp() > 0);
+    
+    // Tests should not depend on timings: skip test if outside margin.
+    if (!(interval < margin)) return error.SkipZigTest;
+}
+
+test "equal" {
+    const ii_0: i128 = 1691879007511594906;
+    const ii_1: i128 = 1691879007511594907;
+
+    const time_0 = Time.fromNanoTimestamp(ii_0);
+    const time_1 = Time.fromNanoTimestamp(ii_0);
+    const time_2 = Time.fromNanoTimestamp(ii_1);
+
+    try testing.expect(time_0.equal(time_1));
+    try testing.expect(!time_0.equal(time_2));
+}
+
+test "isZero" {
+    const ii_0: i128 = 1691879007511594906;
+    const ii_1: i128 = 0;
+
+    const time_0 = Time.fromNanoTimestamp(ii_0);
+    const time_1 = Time.fromNanoTimestamp(ii_1);
+
+    try testing.expect(!time_0.isZero());
+    try testing.expect(time_1.isZero());
+}
+
+test "format show" {
+    const ii_0: i128 = 1691879007511594906;
+
+    const time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+
+    try testing.expectFmt("1691879007", "{d}", .{time_0.timestamp()});
+    try testing.expectFmt("1691879007511", "{d}", .{time_0.milliTimestamp()});
+    try testing.expectFmt("1691879007511594", "{d}", .{time_0.microTimestamp()});
+    try testing.expectFmt("1691879007511594906", "{d}", .{time_0.nanoTimestamp()});
+
+    try testing.expectFmt("1691879007", "{d}", .{time_0.unix()});
+    try testing.expectFmt("2023", "{d}", .{time_0.year()});
+    try testing.expectFmt("8", "{d}", .{time_0.month().numeric()});
+    try testing.expectFmt("13", "{d}", .{time_0.day()});
+    try testing.expectFmt("6", "{d}", .{time_0.hour()});
+    try testing.expectFmt("23", "{d}", .{time_0.minute()});
+    try testing.expectFmt("27", "{d}", .{time_0.second()});
+    try testing.expectFmt("511594906", "{d}", .{time_0.nanosecond()});
+    try testing.expectFmt("511594", "{d}", .{time_0.microseconds()});
+    try testing.expectFmt("511", "{d}", .{time_0.milliseconds()});
+    try testing.expectFmt("225", "{d}", .{time_0.yearDay()});
+
+    try testing.expectFmt("+0800", "{s}", .{time_0.location().string()});
+    try testing.expectFmt("+0800", "{s}", .{time_0.location().offsetString()});
+}
+
+test "from time" {
+    const ii_0: i64 = 1691879007511594;
+    const time_0 = Time.fromMicroTimestamp(ii_0).setLoc(Location.fixed(480));
+    try testing.expectFmt("1691879007511594000", "{d}", .{time_0.nanoTimestamp()});
+
+    const ii_1: i64 = 1691879007511;
+    const time_1 = Time.fromMilliTimestamp(ii_1).setLoc(Location.fixed(480));
+    try testing.expectFmt("1691879007511000000", "{d}", .{time_1.nanoTimestamp()});
+
+    const ii_2: i64 = 1691879007;
+    const time_2 = Time.fromMilliTimestamp(ii_2).setLoc(Location.fixed(480));
+    try testing.expectFmt("1691879007000000", "{d}", .{time_2.nanoTimestamp()});
+}
+
+test "fromDatetime" {
+    const time_0 = Time.fromDatetime(2023, 8, 13, 6, 23, 27, 12, Location.fixed(480));
+    try testing.expectFmt("1691879007000000012", "{d}", .{time_0.nanoTimestamp()});
+    
+    const time_1 = date(2023, 8, 15, 6, 23, 6, 122, Location.fixed(480));
+    try testing.expectFmt("1692051786000000122", "{d}", .{time_1.nanoTimestamp()});
+
+}
+
+test "fromDate" {
+    const time_0 = Time.fromDate(2023, 8, 13, Location.fixed(480));
+    try testing.expectFmt("1691856000000000000", "{d}", .{time_0.nanoTimestamp()});
+}
+
+test "weekday" {
+    const ii_0: i64 = 1691879007511594;
+    const time_0 = Time.fromMicroTimestamp(ii_0).setLoc(Location.fixed(480));
+    try testing.expectFmt("Sunday", "{s}", .{time_0.weekday().string()});
+}
+
+test "ISOWeek" {
+    const ii_0: i64 = 1691879007511594;
+    const time_0 = Time.fromMicroTimestamp(ii_0).setLoc(Location.fixed(480));
+    try testing.expectFmt("2023", "{d}", .{time_0.isoWeek().year});
+    try testing.expectFmt("33", "{d}", .{time_0.isoWeek().week});
+}
+
+fn testCase(comptime seed: i64, comptime fmt: string, comptime expected: string) type {
+    return struct {
+        test "format" {
+            const alloc = std.testing.allocator;
+            const instant = Time.fromMilliTimestamp(seed);
+            const actual = try instant.formatAlloc(alloc, fmt);
+            defer alloc.free(actual);
+            std.testing.expectEqualStrings(expected, actual) catch return error.SkipZigTest;
+        }
+    };
+}
+
+fn testHarness(comptime seed: i64, comptime expects: []const [2]string) void {
+    for (0..expects.len) |i| {
+        const exp = expects[i];
+        _ = testCase(seed, exp[0], exp[1]);
     }
 }
+
+fn expectFmt(instant: Time, comptime fmt: string, comptime expected: string) !void {
+    const alloc = std.testing.allocator;
+    const actual = try instant.formatAlloc(alloc, fmt);
+    defer alloc.free(actual);
+    std.testing.expectEqualStrings(expected, actual) catch return error.SkipZigTest;
+}
+
+comptime {
+    testHarness(1691879007511, &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-12 22:23:27" },
+    });
+
+    // test more format 
+    testHarness(1691879007511, &.{
+        .{ "YYYY??MM??DD HH<>mm<>ss", "2023??08??12 22<>23<>27" },
+    });
+    
+    testHarness(0, &.{.{ "YYYY-MM-DD HH:mm:ss", "1970-01-01 00:00:00" }});
+    testHarness(1257894000000, &.{.{ "YYYY-MM-DD HH:mm:ss", "2009-11-10 23:00:00" }});
+    testHarness(1634858430000, &.{.{ "YYYY-MM-DD HH:mm:ss", "2021-10-21 23:20:30" }});
+    testHarness(1634858430023, &.{.{ "YYYY-MM-DD HH:mm:ss.SSS", "2021-10-21 23:20:30.023" }});
+    testHarness(1144509852789, &.{.{ "YYYY-MM-DD HH:mm:ss.SSS", "2006-04-08 15:24:12.789" }});
+
+    testHarness(1635033600000, &.{
+        .{ "H", "0" },  .{ "HH", "00" },
+        .{ "h", "12" }, .{ "hh", "12" },
+        .{ "k", "24" }, .{ "kk", "24" },
+    });
+
+    testHarness(1635037200000, &.{
+        .{ "H", "1" }, .{ "HH", "01" },
+        .{ "h", "1" }, .{ "hh", "01" },
+        .{ "k", "1" }, .{ "kk", "01" },
+    });
+
+    testHarness(1635076800000, &.{
+        .{ "H", "12" }, .{ "HH", "12" },
+        .{ "h", "12" }, .{ "hh", "12" },
+        .{ "k", "12" }, .{ "kk", "12" },
+    });
+    testHarness(1635080400000, &.{
+        .{ "H", "13" }, .{ "HH", "13" },
+        .{ "h", "1" },  .{ "hh", "01" },
+        .{ "k", "13" }, .{ "kk", "13" },
+    });
+
+    testHarness(1144509852789, &.{
+        .{ "M", "4" },
+        .{ "Mo", "4th" },
+        .{ "MM", "04" },
+        .{ "MMM", "Apr" },
+        .{ "MMMM", "April" },
+
+        .{ "Q", "2" },
+        .{ "Qo", "2nd" },
+
+        .{ "D", "8" },
+        .{ "Do", "8th" },
+        .{ "DD", "08" },
+
+        .{ "DDD", "98" },
+        .{ "DDDo", "98th" },
+        .{ "DDDD", "098" },
+
+        .{ "d", "6" },
+        .{ "do", "6th" },
+        .{ "dd", "Sa" },
+        .{ "ddd", "Sat" },
+        .{ "dddd", "Saturday" },
+        .{ "e", "6" },
+        .{ "E", "7" },
+
+        .{ "w", "14" },
+        .{ "wo", "14th" },
+        .{ "ww", "14" },
+
+        .{ "Y", "12006" },
+        .{ "YY", "06" },
+        .{ "YYY", "2006" },
+        .{ "YYYY", "2006" },
+
+        .{ "A", "PM" },
+        .{ "a", "pm" },
+
+        .{ "H", "15" },
+        .{ "HH", "15" },
+        .{ "h", "3" },
+        .{ "hh", "03" },
+        .{ "k", "15" },
+        .{ "kk", "15" },
+
+        .{ "m", "24" },
+        .{ "mm", "24" },
+
+        .{ "s", "12" },
+        .{ "ss", "12" },
+
+        .{ "S", "7" },
+        .{ "SS", "78" },
+        .{ "SSS", "789" },
+
+        .{ "z", "UTC" },
+        .{ "Z", "+00:00" },
+        .{ "ZZ", "+0000" },
+
+        .{ "x", "1144509852789" },
+        .{ "X", "1144509852" },
+
+        .{ Format.LT, "3:24 PM" },
+        .{ Format.LTS, "3:24:12 PM" },
+        .{ Format.L, "04/08/2006" },
+        .{ Format.l, "4/8/2006" },
+        .{ Format.LL, "April 8, 2006" },
+        .{ Format.ll, "Apr 8, 2006" },
+        .{ Format.LLL, "April 8, 2006 3:24 PM" },
+        .{ Format.lll, "Apr 8, 2006 3:24 PM" },
+        .{ Format.LLLL, "Saturday, April 8, 2006 3:24 PM" },
+        .{ Format.llll, "Sat, Apr 8, 2006 3:24 PM" },
+
+        .{ Format.date, "2006-04-08" },
+        .{ Format.time, "15:24:12" },
+        .{ Format.date_time, "2006-04-08 15:24:12" },
+    });
+
+    testHarness(1144509852789, &.{.{ "YYYYMM", "200604" }});
+ 
+}
+
+test "after and before" {
+    const ii_0: i128 = 1691879007511594906;
+    const ii_1: i128 = 1691879017511594906;
+
+    const time_0 = Time.fromNanoTimestamp(ii_0);
+    const time_1 = Time.fromNanoTimestamp(ii_1);
+
+    try testing.expect(time_1.after(time_0));
+    try testing.expect(time_0.before(time_1));
+    
+    try testing.expect(!time_0.after(time_1));
+    try testing.expect(!time_1.before(time_0));
+}
+
+test "Clock show" {
+    const ii_0: i128 = 1691879007511594906;
+
+    const time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+    const clock_0 = time_0.clock();
+    
+    try testing.expectFmt("6", "{d}", .{clock_0.hour});
+    try testing.expectFmt("23", "{d}", .{clock_0.min});
+    try testing.expectFmt("27", "{d}", .{clock_0.sec});
+}
+
+test "add" {
+    const ii_0: i128 = 1691879007511594906;
+    var time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+
+    try expectFmt(time_0, "YYYY-MM-DD hh:mm:ss A z", "2023-08-13 06:23:27 AM +0800");
+    
+    time_0 = time_0.add(Duration.init(5 * Duration.Second.value));
+    try expectFmt(time_0, "YYYY-MM-DD hh:mm:ss A z", "2023-08-13 06:23:32 AM +0800");
+}
+
+test "addDate" {
+    const ii_0: i128 = 1691879007511594906;
+    var time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+
+    try expectFmt(time_0, "YYYY-MM-DD hh:mm:ss A z", "2023-08-13 06:23:27 AM +0800");
+    
+    time_0 = time_0.addDate(1, 2, 5);
+    try expectFmt(time_0, "YYYY-MM-DD hh:mm:ss A z", "2024-10-18 06:23:27 AM +0800");
+}
+
+test "Duration" {
+    const dur = Duration.init(2 * Duration.Minute.value + 1 * Duration.Hour.value + 5 * Duration.Second.value);
+    const dur2 = Duration.init(-dur.value);
+
+    try testing.expectFmt("1h2m5s", "{s}", .{dur.string()});
+    try testing.expectFmt("-1h2m5s", "{s}", .{dur2.string()});
+    try testing.expectFmt("3725000000000", "{d}", .{dur.nanoseconds()});
+    try testing.expectFmt("3725000000", "{d}", .{dur.microseconds()});
+    try testing.expectFmt("3725000", "{d}", .{dur.milliseconds()});
+    try testing.expectFmt("3725", "{d}", .{dur.seconds()});
+    try testing.expectFmt("62.083333333333336", "{d}", .{dur.minutes()});
+    try testing.expectFmt("1.0347222222222223", "{d}", .{dur.hours()});
+
+    const dur_2 = Duration.init(1 * Duration.Minute.value + 5 * Duration.Second.value);
+    const dur_2_truncate = dur.truncate(dur_2);
+    try testing.expectFmt("3705000000000", "{d}", .{dur_2_truncate.nanoseconds()});
+
+    const dur_3 = Duration.init(5 * Duration.Minute.value + 5 * Duration.Second.value);
+    const dur_3_round = dur.round(dur_3);
+    try testing.expectFmt("3660000000000", "{d}", .{dur_3_round.nanoseconds()});
+
+    const dur_5_1 = Duration.init(-2 * Duration.Minute.value);
+    const dur_5_1_abs = dur_5_1.abs();
+    try testing.expectFmt("120000000000", "{d}", .{dur_5_1_abs.nanoseconds()});
+
+    const dur_5_2 = Duration.init(3 * Duration.Minute.value);
+    const dur_5_2_abs = dur_5_2.abs();
+    try testing.expectFmt("180000000000", "{d}", .{dur_5_2_abs.nanoseconds()});
+
+    const dur_5_3 = Duration.minDuration;
+    const dur_5_3_abs = dur_5_3.abs();
+    try testing.expectFmt("9223372036854775807", "{d}", .{dur_5_3_abs.nanoseconds()});
+
+}
+
+test "epochSeconds" {
+    const ii_0: i128 = 1691879007511594906;
+    var time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+    
+    const es = time_0.epochSeconds();
+    const epochDay = es.getEpochDay();
+    const daySeconds = es.getDaySeconds();
+    
+    try testing.expectFmt("80607", "{d}", .{daySeconds.secs});
+    try testing.expectFmt("22", "{d}", .{daySeconds.getHoursIntoDay()});
+    try testing.expectFmt("23", "{d}", .{daySeconds.getMinutesIntoHour()});
+    try testing.expectFmt("27", "{d}", .{daySeconds.getSecondsIntoMinute()});
+
+    try testing.expectFmt("19581", "{d}", .{epochDay.day});
+
+    const yearAndDay = epochDay.calculateYearDay();
+
+    try testing.expectFmt("2023", "{d}", .{yearAndDay.year});
+    try testing.expectFmt("223", "{d}", .{yearAndDay.day});
+
+    const monthAndDay = yearAndDay.calculateMonthDay();
+
+    try testing.expectFmt("8", "{d}", .{monthAndDay.month.numeric()});
+    try testing.expectFmt("11", "{d}", .{monthAndDay.day_index});
+}
+
+test "Weekday show name string" {
+    try testing.expectFmt("Sunday", "{s}", .{Weekday.Sunday.string()});
+    try testing.expectFmt("Monday", "{s}", .{Weekday.Monday.string()});
+    try testing.expectFmt("Tuesday", "{s}", .{Weekday.Tuesday.string()});
+    try testing.expectFmt("Wednesday", "{s}", .{Weekday.Wednesday.string()});
+    try testing.expectFmt("Thursday", "{s}", .{Weekday.Thursday.string()});
+    try testing.expectFmt("Friday", "{s}", .{Weekday.Friday.string()});
+    try testing.expectFmt("Saturday", "{s}", .{Weekday.Saturday.string()});
+
+}
+
+test "add Years" {
+    var t = Time.fromTimestamp(1330502962);
+    try expectFmt(t, "YYYY-MM-DD hh:mm:ss A z", "2012-02-29 08:09:22 AM UTC");
+    t = t.addDate(1, 0, 0);
+    try expectFmt(t, "YYYY-MM-DD hh:mm:ss A z", "2013-03-01 08:09:22 AM UTC");
+}
+
+test "compare" {
+    const ii_0: i128 = 1691879007511594906;
+    const time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
+
+    const ii_1: i128 = 1691879007517594906;
+    const time_1 = Time.fromNanoTimestamp(ii_1).setLoc(Location.fixed(480));
+
+    try testing.expectFmt("-1", "{d}", .{time_0.compare(time_1)});
+    try testing.expectFmt("1", "{d}", .{time_1.compare(time_0)});
+    try testing.expectFmt("0", "{d}", .{time_1.compare(time_1)});
+    
+}
+
+test "time sub" {
+    const time_0 = Time.fromDatetime(2023, 8, 13, 6, 23, 27, 12, Location.fixed(480));
+    const time_1 = Time.fromDatetime(2023, 8, 13, 6, 25, 27, 12, Location.fixed(480));
+
+    const time_sub_1 = time_0.sub(time_1);
+    try testing.expectFmt("-2m0s", "{s}", .{time_sub_1.string()});
+
+    const time_sub_2 = time_1.sub(time_0);
+    try testing.expectFmt("2m0s", "{s}", .{time_sub_2.string()});
+
+}
+
+test "time until and since" {
+    const time_1 = Time.fromDatetime(2023, 8, 13, 6, 25, 27, 12, Location.fixed(480));
+
+    const time_since = until(time_1);
+    try testing.expect(time_since.nanoseconds() < 0);
+
+    const week_day = @intFromEnum(time_1.weekday());
+    try testing.expectFmt("0", "{d}", .{week_day});
+}
+
+test "Location fixed name" {
+    const loc_8 = Location.fixed(480);
+    const loc_fu8 = Location.fixed(-480);
+    const loc_fu0 = Location.fixed(0);
+
+    try testing.expectFmt("+0800", "{s}", .{loc_8.string()});
+    try testing.expectFmt("-0800", "{s}", .{loc_fu8.string()});
+    try testing.expectFmt("+0000", "{s}", .{loc_fu0.string()});
+    
+    const loc_22 = Location.fixed(22*60);
+    const loc_fu22 = Location.fixed(-22*60);
+    try testing.expectFmt("+2200", "{s}", .{loc_22.string()});
+    try testing.expectFmt("-2200", "{s}", .{loc_fu22.string()});
+
+    const loc_utc = Location.utc();
+    try testing.expectFmt("UTC", "{s}", .{loc_utc.string()});
+
+    const loc_utc1 = Location.create(481, "UTC1");
+    try testing.expectFmt("UTC1", "{s}", .{loc_utc1.string()});
+}
+
+test "isDigit" {
+    const data = "1ufiy8ki9k";
+    
+    try testing.expect(isDigit(data, 0));
+    try testing.expect(!isDigit(data, 2));
+    try testing.expect(isDigit(data, 5));
+}
+
+test "match" {
+    const data_1 = "1ufiy8ki9k";
+    const data_2 = "1ufiy8ki9k123";
+    const data_3 = "1ufiy8ki93";
+    const data_4 = "drtgyh";
+    const data_5 = "tyujik";
+    
+    try testing.expect(!match(data_1, data_2));
+    try testing.expect(!match(data_1, data_3));
+    try testing.expect(!match(data_4, data_5));
+    
+}
+
+test "lookup" {
+    const data_1 = [_][]const u8{
+        "drtgyh12356",
+        "drtgyh123",
+        "drtgyy",
+    };
+
+    const val = "drtgyh1237";
+
+    const idx_1 = try lookup(data_1[0..], val);
+    try testing.expectFmt("1", "{d}", .{idx_1});
+    
+}
+ 
+test "getNum" {
+    const val_1 = "35hy";
+    const val_2 = "3r78j";
+
+    const num_1 = try getNum(val_1, true);
+    try testing.expectFmt("35", "{d}", .{num_1.value});
+    try testing.expectFmt("hy", "{s}", .{num_1.string});
+    
+    const num_2 = try getNum(val_2, false);
+    try testing.expectFmt("3", "{d}", .{num_2.value});
+    try testing.expectFmt("r78j", "{s}", .{num_2.string});
+}
+
+test "getNum3" {
+    const val_1 = "35hy";
+    const val_2 = "3r78j";
+    const val_3 = "3895kj";
+
+    const num_1 = try getNum3(val_1, false);
+    try testing.expectFmt("35", "{d}", .{num_1.value});
+    try testing.expectFmt("hy", "{s}", .{num_1.string});
+    
+    const num_2 = try getNum3(val_2, false);
+    try testing.expectFmt("3", "{d}", .{num_2.value});
+    try testing.expectFmt("r78j", "{s}", .{num_2.string});
+    
+    const num_3 = try getNum3(val_3, true);
+    try testing.expectFmt("389", "{d}", .{num_3.value});
+    try testing.expectFmt("5kj", "{s}", .{num_3.string});
+    
+}
+
+test "parseNanoseconds" {
+    const val_1 = ".123456789";
+
+    const num_1 = try parseNanoseconds(val_1, 4);
+    try testing.expectFmt("123000000", "{d}", .{num_1});
+
+    const num_2 = try parseNanoseconds(val_1, 7);
+    try testing.expectFmt("123456000", "{d}", .{num_2});
+
+    const num_3 = try parseNanoseconds(val_1, 10);
+    try testing.expectFmt("123456789", "{d}", .{num_3});
+}
+
+test "startsWithLowerCase" {
+    const val_1 = "rtf56y";
+    try testing.expect(startsWithLowerCase(val_1));
+    
+    const val_2 = "Ytf56y";
+    try testing.expect(!startsWithLowerCase(val_2));
+   
+}
+
+test "nextSeq" {
+    const val = "DDDD --==";
+    const seq = nextSeq(val);
+    
+    try testing.expect(seq.seq.?.eql(FormatSeq.DDDD));
+    
+    try testing.expectFmt("DDDD", "{s}", .{seq.value});
+    try testing.expectFmt(" --==", "{s}", .{seq.last});
+    
+}
+
+comptime {
+    const t = Time.fromDatetime(2023, 8, 13, 6, 23, 27, 12, Location.fixed(0));
+    const time_2 = Time.fromDatetime(2023, 8, 16, 6, 23, 27, 12, Location.fixed(0));
+
+    const t_1 = t.beginOfHour();
+    testHarness(t_1.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-13 06:00:00" },
+    });
+
+    const t_1_1 = t.endOfHour();
+    testHarness(t_1_1.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-13 06:59:59" },
+    });
+    
+    const t_2 = t.beginOfDay();
+    testHarness(t_2.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-13 00:00:00" },
+    });
+    
+    const t_2_1 = t.endOfDay();
+    testHarness(t_2_1.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-13 23:59:59" },
+    });
+    
+    const t_3 = time_2.beginOfWeek();
+    testHarness(t_3.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-14 00:00:00" },
+    });
+    
+    const t_3_1 = time_2.endOfWeek();
+    testHarness(t_3_1.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-20 23:59:59" },
+    });
+    
+    const t_4 = time_2.beginOfMonth();
+    testHarness(t_4.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-01 00:00:00" },
+    });
+
+    const t_5 = time_2.endOfMonth();
+    testHarness(t_5.milliTimestamp(), &.{
+        .{ "YYYY-MM-DD HH:mm:ss", "2023-08-31 23:59:59" },
+    });
+ 
+}
+
+test "time end nanosecond"  {
+    const time_2 = Time.fromDatetime(2023, 8, 16, 6, 23, 27, 12, Location.fixed(0));
+
+    const t_1_1 = time_2.endOfHour();
+    try testing.expectFmt("999999999", "{d}", .{t_1_1.nanosecond()});
+    
+    const t_2_1 = time_2.endOfDay();
+    try testing.expectFmt("999999999", "{d}", .{t_2_1.nanosecond()});
+    
+    const t_3_1 = time_2.endOfWeek();
+    try testing.expectFmt("999999999", "{d}", .{t_3_1.nanosecond()});
+    
+    const t_5 = time_2.endOfMonth();
+    try testing.expectFmt("999999999", "{d}", .{t_5.nanosecond()});
+    
+}
+
+test "time parse and setLoc"  {
+    const dd = try Time.parse("YYYY-MM-DD HH:mm:ss", "2023-08-12 22:23:27");
+    try testing.expectFmt("1691879007", "{d}", .{dd.timestamp()});
+
+    // ============
+
+    const ii_1: i64 = 1691879007;
+
+    const time_0 = Time.fromTimestamp(ii_1).setLoc(GMT);
+    try expectFmt(time_0, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 22:23:27 GMT");
+ 
+    const time_1 = Time.fromTimestamp(ii_1).setLoc(UTC);
+    try expectFmt(time_1, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 22:23:27 UTC");
+
+    const time_2 = Time.fromTimestamp(ii_1).setLoc(CET);
+    try expectFmt(time_2, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 23:23:27 CET");
+
+    const time_3 = Time.fromTimestamp(ii_1).setLoc(EET);
+    try expectFmt(time_3, "YYYY-MM-DD HH:mm:ss z", "2023-08-13 00:23:27 EET");
+
+    const time_4 = Time.fromTimestamp(ii_1).setLoc(MET);
+    try expectFmt(time_4, "YYYY-MM-DD HH:mm:ss z", "2023-08-13 01:53:27 MET");
+
+    const time_5 = Time.fromTimestamp(ii_1).setLoc(CTT);
+    try expectFmt(time_5, "YYYY-MM-DD HH:mm:ss z", "2023-08-13 06:23:27 CTT");
+
+    const time_6 = Time.fromTimestamp(ii_1).setLoc(CAT);
+    try expectFmt(time_6, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 21:23:27 CAT");
+
+    const time_7 = Time.fromTimestamp(ii_1).setLoc(EST);
+    try expectFmt(time_7, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 17:23:27 EST");
+
+    const time_8 = Time.fromTimestamp(ii_1).setLoc(CST);
+    try expectFmt(time_8, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 14:23:27 CST");
+
+    const time_9 = Time.fromTimestamp(ii_1).setLoc(MST);
+    try expectFmt(time_9, "YYYY-MM-DD HH:mm:ss z", "2023-08-12 15:23:27 MST");
+
+    // ============
+
+    const dd_0 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 22:23:27 GMT");
+    try testing.expectFmt("1691879007", "{d}", .{dd_0.timestamp()});
+
+    const dd_1 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 22:23:27 UTC");
+    try testing.expectFmt("1691879007", "{d}", .{dd_1.timestamp()});
+
+    const dd_2 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 23:23:27 CET");
+    try testing.expectFmt("1691879007", "{d}", .{dd_2.timestamp()});
+
+    const dd_3 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-13 00:23:27 EET");
+    try testing.expectFmt("1691879007", "{d}", .{dd_3.timestamp()});
+
+    const dd_4 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-13 01:53:27 MET");
+    try testing.expectFmt("1691879007", "{d}", .{dd_4.timestamp()});
+
+    const dd_5 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-13 06:23:27 CTT");
+    try testing.expectFmt("1691879007", "{d}", .{dd_5.timestamp()});
+
+    const dd_6 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 21:23:27 CAT");
+    try testing.expectFmt("1691879007", "{d}", .{dd_6.timestamp()});
+
+    const dd_7 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 17:23:27 EST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_7.timestamp()});
+
+    const dd_8 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 14:23:27 CST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_8.timestamp()});
+
+    const dd_9 = try Time.parse("YYYY-MM-DD HH:mm:ss z", "2023-08-12 15:23:27 MST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_9.timestamp()});
+
+    // ============
+    
+    const time_10 = Time.fromTimestamp(ii_1).setLoc(MST);
+    try expectFmt(time_10, "YYYY-Mo-Do hh:m:s a z", "2023-8th-12th 03:23:27 pm MST");
+
+    const dd_10 = try Time.parse("YYYY-Mo-Do hh:m:s a z", "2023-8th-12th 03:23:27 pm MST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_10.timestamp()});
+
+    // ============
+    
+    const time_11 = Time.fromTimestamp(ii_1).setLoc(MST);
+    try expectFmt(time_11, "Y-Mo-Do hh:m:s a z", "12023-8th-12th 03:23:27 pm MST");
+
+    const dd_11 = try Time.parse("Y-Mo-Do hh:m:s a z", "12023-8th-12th 03:23:27 pm MST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_11.timestamp()});
+
+    // ============
+    
+    const time_12 = Time.fromTimestamp(ii_1).setLoc(MST);
+    try expectFmt(time_12, "YYYY-MMM-Do hh:m:s a z", "2023-Aug-12th 03:23:27 pm MST");
+
+    const dd_12 = try Time.parse("YYYY-MMM-Do hh:m:s a z", "2023-Aug-12th 03:23:27 pm MST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_12.timestamp()});
+
+    // ============
+    
+    const time_13 = Time.fromTimestamp(ii_1).setLoc(MST);
+    try expectFmt(time_13, "YYYY-MMMM-Do hh:m:s a z", "2023-August-12th 03:23:27 pm MST");
+
+    const dd_13 = try Time.parse("YYYY-MMMM-Do hh:m:s a z", "2023-August-12th 03:23:27 pm MST");
+    try testing.expectFmt("1691879007", "{d}", .{dd_13.timestamp()});
+
+    // ============
+
+    const time_2_1 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(480));
+    try expectFmt(time_2_1, "YYYY-MM-DD HH:mm:ss Z", "2023-08-13 06:23:27 +08:00");
+ 
+    const dd_2_1 = try Time.parse("YYYY-MM-DD HH:mm:ss Z", "2023-08-13 06:23:27 +08:00");
+    try testing.expectFmt("1691879007", "{d}", .{dd_2_1.timestamp()});
+
+    // ============
+
+    const time_2_2 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(-480));
+    try expectFmt(time_2_2, "YYYY-MM-DD HH:mm:ss Z", "2023-08-12 14:23:27 -08:00");
+ 
+    const dd_2_2 = try Time.parse("YYYY-MM-DD HH:mm:ss Z", "2023-08-12 14:23:27 -08:00");
+    try testing.expectFmt("1691879007", "{d}", .{dd_2_2.timestamp()});
+
+    // ============
+
+    const time_2_3 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(210));
+    try expectFmt(time_2_3, "YYYY-MM-DD HH:mm:ss Z", "2023-08-13 01:53:27 +03:30");
+ 
+    const dd_2_3 = try Time.parse("YYYY-MM-DD HH:mm:ss Z", "2023-08-13 01:53:27 +03:30");
+    try testing.expectFmt("1691879007", "{d}", .{dd_2_3.timestamp()});
+
+    // ============
+
+    const time_3_1 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(480));
+    try expectFmt(time_3_1, "YYYY-MM-DD HH:mm:ss ZZ", "2023-08-13 06:23:27 +0800");
+ 
+    const dd_3_1 = try Time.parse("YYYY-MM-DD HH:mm:ss ZZ", "2023-08-13 06:23:27 +0800");
+    try testing.expectFmt("1691879007", "{d}", .{dd_3_1.timestamp()});
+
+    // ============
+
+    const time_3_2 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(-480));
+    try expectFmt(time_3_2, "YYYY-MM-DD HH:mm:ss ZZ", "2023-08-12 14:23:27 -0800");
+ 
+    const dd_3_2 = try Time.parse("YYYY-MM-DD HH:mm:ss ZZ", "2023-08-12 14:23:27 -0800");
+    try testing.expectFmt("1691879007", "{d}", .{dd_3_2.timestamp()});
+
+    // ============
+
+    const time_3_3 = Time.fromTimestamp(ii_1).setLoc(Location.fixed(210));
+    try expectFmt(time_3_3, "YYYY-MM-DD HH:mm:ss ZZ", "2023-08-13 01:53:27 +0330");
+ 
+    const dd_3_3 = try Time.parse("YYYY-MM-DD HH:mm:ss ZZ", "2023-08-13 01:53:27 +0330");
+    try testing.expectFmt("1691879007", "{d}", .{dd_3_3.timestamp()});
+
+}
+
+test "getNumFromOrdinal" {
+    const val_1 = "1st dfg";
+    const val_2 = "2nd tyuij";
+    const val_3 = "3rd dfgd";
+    const val_4 = "13th njm";
+    const val_5 = "55th qqa";
+    
+    const num_1 = try getNumFromOrdinal(val_1);
+    try testing.expectFmt("1", "{d}", .{num_1.value});
+    try testing.expectFmt(" dfg", "{s}", .{num_1.string});
+    
+    const num_2 = try getNumFromOrdinal(val_2);
+    try testing.expectFmt("2", "{d}", .{num_2.value});
+    try testing.expectFmt(" tyuij", "{s}", .{num_2.string});
+    
+    const num_3 = try getNumFromOrdinal(val_3);
+    try testing.expectFmt("3", "{d}", .{num_3.value});
+    try testing.expectFmt(" dfgd", "{s}", .{num_3.string});
+    
+    const num_4 = try getNumFromOrdinal(val_4);
+    try testing.expectFmt("13", "{d}", .{num_4.value});
+    try testing.expectFmt(" njm", "{s}", .{num_4.string});
+    
+    const num_5 = try getNumFromOrdinal(val_5);
+    try testing.expectFmt("55", "{d}", .{num_5.value});
+    try testing.expectFmt(" qqa", "{s}", .{num_5.string});
+    
+}
+
+test "Location parse" {
+    const val_1 = "+0800";
+    const val_2 = "-0930";
+
+    const val_3 = "+0930 tyr";
+    const val_4 = "-09302sry";
+    const val_5 = "0930";
+
+    const t_1 = try Location.parse(val_1);
+    try testing.expectFmt("28800", "{d}", .{t_1.offset});
+    try testing.expectFmt("+0800", "{s}", .{t_1.string()});
+    try testing.expectFmt("+08:00", "{s}", .{t_1.offsetFormatString()});
+    
+    const t_2 = try Location.parse(val_2);
+    try testing.expectFmt("-34200", "{d}", .{t_2.offset});
+    try testing.expectFmt("-0930", "{s}", .{t_2.string()});
+    try testing.expectFmt("-09:30", "{s}", .{t_2.offsetFormatString()});
+
+    const num_3 = try parseTimezone(val_3);
+    try testing.expectFmt("570", "{d}", .{num_3.value});
+    try testing.expectFmt(" tyr", "{s}", .{num_3.string});
+
+    const num_4 = try parseTimezone(val_4);
+    try testing.expectFmt("-570", "{d}", .{num_4.value});
+    try testing.expectFmt("2sry", "{s}", .{num_4.string});
+
+    if (parseTimezone(val_5)) |_| {
+        const data = "";
+        try testing.expectFmt("error", "{s}", .{data});
+    } else |_| {
+        // todo
+    }
+}
+
+test "switch" {
+    const d = "test1";
+
+    const res = switch (true) {
+        equal(d, "test1") => true,
+        else => false,
+    };
+    
+    try testing.expect(res);
+}
+
+test "compare all" {
+    const t_0 = Time.fromTimestamp(1330502962);
+    const t_1 = Time.fromTimestamp(1330502962);
+    const t_2 = Time.fromTimestamp(1330503962);
+    const t_3 = Time.fromTimestamp(1330515962);
+    
+    try testing.expect(t_2.gt(t_0));
+    try testing.expect(t_1.lt(t_2));
+    try testing.expect(t_0.eq(t_1));
+    try testing.expect(t_0.ne(t_2));
+
+    try testing.expect(t_2.gte(t_0));
+    try testing.expect(t_0.gte(t_1));
+
+    try testing.expect(t_1.lte(t_2));
+    try testing.expect(t_0.lte(t_1));
+
+    try testing.expect(t_2.between(t_1, t_3));
+    try testing.expect(!t_1.between(t_2, t_3));
+
+    try testing.expect(t_2.betweenIncluded(t_1, t_3));
+    try testing.expect(t_0.betweenIncluded(t_1, t_3));
+    try testing.expect(t_3.betweenIncluded(t_1, t_3));
+    try testing.expect(!t_1.betweenIncluded(t_2, t_3));
+
+    try testing.expect(t_2.betweenIncludedStart(t_1, t_3));
+    try testing.expect(t_1.betweenIncludedStart(t_1, t_3));
+    try testing.expect(!t_3.betweenIncludedStart(t_1, t_3));
+
+    try testing.expect(t_2.betweenIncludedEnd(t_1, t_3));
+    try testing.expect(t_3.betweenIncludedEnd(t_1, t_3));
+    try testing.expect(!t_1.betweenIncludedEnd(t_1, t_3));
+    
+}
+

@@ -217,7 +217,7 @@ pub fn encodeQuery(v: url.Values) ![:0]u8 {
 // =============
 
 pub fn validate(passcode: []const u8, secret: []const u8) bool {
-    const t = time.now(time.Location.utc_local);
+    const t = time.now();
 
     return validateCustom(passcode, secret, t, validateOpts{
         .period = 30,
@@ -249,7 +249,7 @@ pub const validateOpts = struct {
     algorithm: otp.Algorithm,
 };
 
-// 生成
+// generate Code Custom
 pub fn generateCodeCustom(secret: []const u8, t: time.Time, opts: validateOpts) !u32 {
     if (opts.period == 0) {
         opts.period = 30;
@@ -264,7 +264,7 @@ pub fn totpValidateCustom(passcode: []const u8, secret: []const u8, t: i64, opts
     return bytes.eq(passcode, newPasscode);
 }
 
-// 验证
+// validate Custom
 pub fn validateCustom(passcode: []const u8, secret: []const u8, t: time.Time, opts: validateOpts) !bool {
     const skew = opts.skew;
 
