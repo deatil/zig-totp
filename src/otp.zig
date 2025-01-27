@@ -2,7 +2,6 @@ const std = @import("std");
 const crypto = std.crypto;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const Hmac = std.crypto.auth.hmac.Hmac;
 
 const base32 = @import("./base32.zig");
 
@@ -21,7 +20,7 @@ pub const Algorithm = enum {
         };
     }
 
-    pub fn hash(self: Algorithm) type {
+    pub fn hashType(self: Algorithm) type {
         return switch (self) {
             .sha1 => crypto.auth.hmac.HmacSha1,
             .sha256 => crypto.auth.hmac.sha2.HmacSha256,
@@ -29,17 +28,50 @@ pub const Algorithm = enum {
             else => crypto.auth.hmac.HmacMd5,
         };
     }
+
+    pub fn hash(self: Algorithm, msg: []const u8, key: []const u8) []u8 {
+        var hashed: []u8 = undefined;
+
+        switch (self) {
+            .sha1 => {
+                var h = crypto.auth.hmac.HmacSha1.init(key);
+                var hmac: [crypto.auth.hmac.HmacSha1.mac_length]u8 = undefined;
+                h.update(msg);
+                h.final(hmac[0..]);
+
+                hashed = hmac[0..];
+            },
+            .sha256 => {
+                var h = crypto.auth.hmac.sha2.HmacSha256.init(key);
+                var hmac: [crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+                h.update(msg);
+                h.final(hmac[0..]);
+
+                hashed = hmac[0..];
+            },
+            .sha512 => {
+                var h = crypto.auth.hmac.sha2.HmacSha512.init(key);
+                var hmac: [crypto.auth.hmac.sha2.HmacSha512.mac_length]u8 = undefined;
+                h.update(msg);
+                h.final(hmac[0..]);
+
+                hashed = hmac[0..];
+            },
+            else => {
+                var h = crypto.auth.hmac.HmacMd5.init(key);
+                var hmac: [crypto.auth.hmac.HmacMd5.mac_length]u8 = undefined;
+                h.update(msg);
+                h.final(hmac[0..]);
+
+                hashed = hmac[0..];
+            },
+        }
+
+        return hashed;
+    }
 };
 
 pub fn hotp(key: []const u8, counter: u64, digit: u32, alg: Algorithm) u32 {
-    const h = switch (alg) {
-        .sha1 => crypto.auth.hmac.HmacSha1,
-        .sha256 => crypto.auth.hmac.sha2.HmacSha256,
-        .sha512 => crypto.auth.hmac.sha2.HmacSha512,
-        else => crypto.auth.hmac.HmacMd5,
-    };
-
-    var hmac: [h.mac_length]u8 = undefined;
     const counter_bytes = [8]u8{
         @as(u8, @truncate(counter >> 56)),
         @as(u8, @truncate(counter >> 48)),
@@ -51,7 +83,7 @@ pub fn hotp(key: []const u8, counter: u64, digit: u32, alg: Algorithm) u32 {
         @as(u8, @truncate(counter)),
     };
 
-    h.create(hmac[0..], counter_bytes[0..], key);
+    var hmac: []u8 = alg.hash(counter_bytes[0..], key);
 
     const offset = hmac[hmac.len - 1] & 0xf;
     const bin_code = hmac[offset .. offset + 4];
@@ -115,16 +147,7 @@ pub fn steam_guard(secret: []const u8, t: i64, alg: Algorithm) ![5]u8 {
         @as(u8, @truncate(counter)),
     };
 
-    const h = switch (alg) {
-        .sha1 => crypto.auth.hmac.HmacSha1,
-        .sha256 => crypto.auth.hmac.sha2.HmacSha256,
-        .sha512 => crypto.auth.hmac.sha2.HmacSha512,
-        else => crypto.auth.hmac.HmacMd5,
-    };
-
-    var hmac: [h.mac_length]u8 = undefined;
-
-    h.create(hmac[0..], counter_bytes[0..], key);
+    var hmac: []u8 = alg.hash(counter_bytes[0..], key);
 
     const offset = hmac[hmac.len - 1] & 0xf;
     const bytes = hmac[offset .. offset + 4];

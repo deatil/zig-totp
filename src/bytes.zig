@@ -1,10 +1,11 @@
 const std = @import("std");
 
 const mem = std.mem;
+const testing = std.testing;
 const Allocator = mem.Allocator;
 
 pub fn contains(data: []const u8, sep: []const u8) bool {
-    var i = mem.indexOf(u8, data, sep);
+    const i = mem.indexOf(u8, data, sep);
     if (i != null) {
         return true;
     }
@@ -130,4 +131,20 @@ pub fn trimSpace(s: []const u8) []const u8 {
     }
 
     return s[start..(stop + 1)];
+}
+
+test "contains all" {
+    try testing.expectEqual(true, contains("123erttt", "er"));
+    try testing.expectEqual(false, contains("123erttt", "er2"));
+    
+    try testing.expectEqual(3, index("123erttt", "er"));
+
+    try testing.expectFmt("rttt", "{s}", .{trimLeft("yerttt", "ye")});
+    try testing.expectFmt("123erty", "{s}", .{trimRight("123ertytt", "tt")});
+
+    try testing.expectEqual(true, hasPrefix("123erttt", "123"));
+    try testing.expectEqual(true, hasSuffix("123erttt", "tt"));
+
+    try testing.expectEqual(true, eq("123erttt", "123erttt"));
+    try testing.expectEqual(false, eq("123erttt", "tt"));
 }
