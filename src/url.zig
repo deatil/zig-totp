@@ -1,12 +1,13 @@
 const std = @import("std");
-const Buffer = std.Buffer;
-const warn = std.debug.warn;
-const assert = std.debug.assert;
 const mem = std.mem;
 const sort = std.sort;
 const StringHashMap = std.hash_map.StringHashMap;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+
+const ArrayList = std.ArrayList(u8);
+
+pub const Uri = std.Uri;
 
 const bytes = @import("./bytes.zig");
 
@@ -117,7 +118,7 @@ fn unescape(t: []u8, ctx: UnescapeContext, s: []const u8, mode: encoding) void {
             }
         }
     } else {
-        mem.copy(u8, t, s);
+        @memcpy(t, s);
     }
 }
 
@@ -179,28 +180,48 @@ fn countUneEscape(s: []const u8, mode: encoding) !UnescapeContext {
     };
 }
 
-pub fn queryEscape(a: *std.Buffer, s: []const u8) !void {
+pub fn queryEscape(a: *ArrayList, s: []const u8) !void {
     const ctx = countEscape(s, encoding.queryComponent);
     try a.resize(ctx.len());
-    return escape(a.toSlice(), ctx, s, encoding.queryComponent);
+
+    const buf = try a.toOwnedSlice();
+    escape(buf, ctx, s, encoding.queryComponent);
+
+    try a.resize(0);
+    try a.appendSlice(buf);
 }
 
-pub fn queryUnescape(a: *std.Buffer, s: []const u8) !void {
+pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.queryComponent);
     try a.resize(ctx.buffer_size);
-    unescape(a.toSlice(), ctx, s, encoding.queryComponent);
+
+    const buf = try a.toOwnedSlice();
+    unescape(buf, ctx, s, encoding.queryComponent);
+
+    try a.resize(0);
+    try a.appendSlice(buf);
 }
 
-pub fn pathEscape(a: *std.Buffer, s: []const u8) !void {
+pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
     const ctx = countEscape(s, encoding.pathSegment);
     try a.resize(ctx.len());
-    escape(a.toSlice(), ctx, s, encoding.pathSegment);
+
+    const buf = try a.toOwnedSlice();
+    escape(buf, ctx, s, encoding.pathSegment);
+
+    try a.resize(0);
+    try a.appendSlice(buf);
 }
 
-pub fn pathUnescape(a: *std.Buffer, s: []const u8) !void {
+pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.pathSegment);
     try a.resize(ctx.buffer_size);
-    unescape(a.toSlice(), ctx, s, encoding.pathSegment);
+
+    const buf = try a.toOwnedSlice();
+    unescape(buf, ctx, s, encoding.pathSegment);
+
+    try a.resize(0);
+    try a.appendSlice(buf);
 }
 
 const EscapeContext = struct {
@@ -251,17 +272,8 @@ fn escape(t: []u8, ctx: EscapeContext, s: []const u8, mode: encoding) void {
             }
         }
     } else {
-        mem.copy(u8, t, s);
+        @memcpy(t[0..], s[0..]);
     }
-}
-
-fn shouldEscapeString(s: []const u8) bool {
-    return countEscape(s).canEscape();
-}
-
-fn shouldUnEscapeString(s: []const u8) !bool {
-    const ctx = try countUneEscape(s);
-    return ctx.canUnEscape();
 }
 
 fn countEscape(s: []const u8, mode: encoding) EscapeContext {
@@ -276,6 +288,7 @@ fn countEscape(s: []const u8, mode: encoding) EscapeContext {
             }
         }
     }
+
     return EscapeContext{
         .space_count = spaceCount,
         .hex_count = hexCount,
@@ -310,12 +323,14 @@ pub fn stringSort(comptime T: type) fn (void, T, T) bool {
 // Unlike in the http.Header map, the keys in a Values map
 // are case-sensitive.
 pub const Values = struct {
-    data: StringHashMap([][]const u8),
+    data: StringHashMap([]const u8),
     allocator: Allocator,
 
+    const Self = @This();
+    
     // init
     pub fn init(allocator: Allocator) Values {
-        const data = StringHashMap([][]const u8).init(allocator);
+        const data = StringHashMap([]const u8).init(allocator);
 
         return .{
             .data = data,
@@ -332,13 +347,8 @@ pub const Values = struct {
     // If there are no values associated with the key, Get returns
     // the empty string. To access multiple values, use the map
     // directly.
-    pub fn get(self: *Values, key: []const u8) []const u8 {
-        const vs = self.data.get(key).?;
-        if (vs.len > 0) {
-            return vs[0];
-        }
-
-        return "";
+    pub fn get(self: *Values, key: []const u8) ?[]const u8 {
+        return self.data.get(key);
     }
 
     // Set sets the key to value. It replaces any existing
@@ -352,10 +362,7 @@ pub const Values = struct {
     // Add adds the value to key. It appends to any existing
     // values associated with key.
     pub fn add(self: *Values, key: []const u8, val: []const u8) !void {
-        const vs = self.data.get(key).?;
-        vs[vs.len + 1] = val;
-
-        try self.data.put(key, vs);
+        try self.data.put(key, val);
     }
 
     pub fn del(self: *Values, key: []const u8) bool {
@@ -370,7 +377,7 @@ pub const Values = struct {
         return false;
     }
 
-    /// Encode encodes the values into �URL encoded� form
+    /// Encode encodes the values into `URL encoded` form
     /// ("bar=baz&foo=quux") sorted by key.
     pub fn encode(self: *Values) ![:0]u8 {
         var buf = std.ArrayList(u8).init(self.allocator);
@@ -390,30 +397,28 @@ pub const Values = struct {
 
         sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-        var buffer = try std.Buffer.init(self.allocator, "");
-        var bufEscape = &buffer;
+        var bufEscape = std.ArrayList(u8).init(self.allocator);
         defer bufEscape.deinit();
 
         for (keys) |k| {
             const vs = self.data.get(k).?;
 
-            try pathEscape(bufEscape, k);
-            const keyEscaped = bufEscape.toSlice();
+            try queryEscape(&bufEscape, k);
+
+            const keyEscaped = try bufEscape.toOwnedSlice();
             try bufEscape.resize(0);
 
-            for (vs) |vv| {
-                if (buf.len > 0) {
-                    try buf.appendSlice("&");
-                }
-
-                try pathEscape(bufEscape, vv);
-                const vvEscaped = bufEscape.toSlice();
-                try bufEscape.resize(0);
-
-                try buf.appendSlice(keyEscaped);
-                try buf.appendSlice("=");
-                try buf.appendSlice(vvEscaped);
+            if (buf.items.len > 0) {
+                try buf.appendSlice("&");
             }
+
+            try queryEscape(&bufEscape, vs);
+            const vvEscaped = try bufEscape.toOwnedSlice();
+            try bufEscape.resize(0);
+
+            try buf.appendSlice(keyEscaped);
+            try buf.appendSlice("=");
+            try buf.appendSlice(vvEscaped);
         }
 
         return buf.toOwnedSliceSentinel(0);
@@ -431,20 +436,19 @@ pub const Values = struct {
 // value.
 // Settings containing a non-URL-encoded semicolon are considered invalid.
 pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
-    const m = Values.init(allocator);
+    var m = Values.init(allocator);
 
-    try parseQuerys(m, query);
+    var query_data: []const u8 = query;
 
-    return m;
-}
+    var bufEscape = std.ArrayList(u8).init(m.allocator);
+    defer bufEscape.deinit();
 
-fn parseQuerys(m: Values, query: []const u8) !void {
-    while (query.len > 0) {
-        const cut_data = bytes.cut(query, "&");
+    while (query_data.len > 0) {
+        const cut_data = bytes.cut(query_data, "&");
 
-        query = cut_data.after;
+        query_data = cut_data.after;
 
-        if (bytes.Contains(cut_data.before, ";")) {
+        if (bytes.contains(cut_data.before, ";")) {
             continue;
         }
 
@@ -454,609 +458,222 @@ fn parseQuerys(m: Values, query: []const u8) !void {
 
         const cut_data2 = bytes.cut(cut_data.before, "=");
 
-        const key = queryUnescape(cut_data2.before) catch {
-            continue;
-        };
-        const value = queryUnescape(cut_data2.after) catch {
+        queryUnescape(&bufEscape, cut_data2.before) catch {
             continue;
         };
 
-        try m.add(key, value);
-    }
-}
+        const keyEscaped = try bufEscape.toOwnedSlice();
+        try bufEscape.resize(0);
 
-// A URL represents a parsed URL (technically, a URI reference).
-//
-// The general form represented is:
-//
-//[scheme:][//[userinfo@]host][/]path[?query][#fragment]
-//
-// URLs that do not start with a slash after the scheme are interpreted as:
-//
-//scheme:opaque[?query][#fragment]
-//
-// Note that the Path field is stored in decoded form: /%47%6f%2f becomes /Go/.
-// A consequence is that it is impossible to tell which slashes in the Path were
-// slashes in the raw URL and which were %2f. This distinction is rarely important,
-// but when it is, code must not use Path directly.
-// The Parse function sets both Path and RawPath in the URL it returns,
-// and URL's String method uses RawPath if it is a valid encoding of Path,
-// by calling the EscapedPath method.
-pub const URL = struct {
-    scheme: ?[]const u8 = null,
-    opaques: ?[]const u8 = null,
-    user: ?UserInfo = null,
-    host: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    raw_path: ?[]const u8 = null,
-    force_query: bool = false,
-    raw_query: ?[]const u8 = null,
-    fragment: ?[]const u8 = null,
-
-    const Scheme = struct {
-        scheme: ?[]const u8,
-        path: []const u8,
-    };
-
-    pub fn getScheme(raw: []const u8) !Scheme {
-        var i: usize = 0;
-        var u: Scheme = undefined;
-        while (i < raw.len) {
-            const c = raw[i];
-            if ('a' <= c and c <= 'z' or 'A' <= c and c <= 'Z') {
-                // do nothing
-            } else if ('0' <= c and c <= '9' and c == '+' and c == '-' and c == '.') {
-                if (i == 0) {
-                    u.path = raw;
-                    return u;
-                }
-            } else if (c == ':') {
-                if (i == 0) {
-                    return error.MissingProtocolScheme;
-                }
-                u.scheme = raw[0..i];
-                u.path = raw[i + 1 ..];
-                return u;
-            } else {
-                //  we have encountered an invalid character,
-                //  so there is no valid scheme
-                u.path = raw;
-                return u;
-            }
-            i = i + 1;
-        }
-        u.path = raw;
-        return u;
-    }
-
-    const SplitResult = struct {
-        x: []const u8,
-        y: ?[]const u8,
-    };
-
-    fn split(s: []const u8, c: []const u8, cutc: bool) SplitResult {
-        if (mem.indexOf(u8, s, c)) |i| {
-            if (cutc) {
-                return SplitResult{
-                    .x = s[0..i],
-                    .y = s[i + c.len ..],
-                };
-            }
-            return SplitResult{
-                .x = s[0..i],
-                .y = s[i..],
-            };
-        }
-        return SplitResult{ .x = s, .y = null };
-    }
-
-    pub fn parse(uri: *URL, a: *Allocator, raw_url: []const u8) !void {
-        const frag = split(raw_url, "#", true);
-        try parseInternal(uri, a, frag.x, false);
-        if (frag.y == null) {
-            return;
-        }
-        const ctx = try countUneEscape(frag.y.?, encoding.path);
-        const f = try a.alloc(u8, ctx.buffer_size);
-        unescape(f, ctx, frag.y.?, encoding.path);
-        uri.fragment = f;
-    }
-
-    pub fn encode(u: *URL, buf: *Buffer) !void {
-        try buf.resize(0);
-        if (u.scheme) |scheme| {
-            try buf.append(scheme);
-            try buf.appendByte(':');
-        }
-        if (u.opaques) |opaques| {
-            try buf.append(opaques);
-        } else {
-            if (u.scheme != null or u.host != null or u.user != null) {
-                if (u.host != null or u.path != null or u.user != null) {
-                    try buf.append("//");
-                }
-                if (u.user != null) {
-                    try u.user.?.encode(buf);
-                    try buf.appendByte('@');
-                }
-                if (u.host) |h| {
-                    const x = buf.len();
-                    const ctx = countEscape(h, encoding.host);
-                    try buf.resize(x + ctx.len());
-                    escape(buf.toSlice()[x..], ctx, h, encoding.host);
-                }
-            }
-            var pathBuf = &try Buffer.init(buf.list.allocator, "");
-            defer pathBuf.deinit();
-            try escapedPath(u, pathBuf);
-            const p = pathBuf.toSlice();
-            if (p.len > 0 and p[0] != '/' and u.host != null) {
-                try buf.appendByte('/');
-            }
-            if (buf.len() == 0) {
-                // RFC 3986 §4.2
-                // A path segment that contains a colon character (e.g., "this:that")
-                // cannot be used as the first segment of a relative-path reference, as
-                // it would be mistaken for a scheme name. Such a segment must be
-                // preceded by a dot-segment (e.g., "./this:that") to make a relative-
-                // path reference.
-                if (mem.indexOfScalar(u8, p, ':')) |idx| {
-                    const nx = mem.indexOfScalar(u8, p[0..idx], '/');
-                    if (nx == null) {
-                        try buf.append("./");
-                    }
-                }
-            }
-            if (p.len > 0) {
-                try buf.append(p);
-            }
-        }
-        if (u.force_query or u.raw_query != null) {
-            try buf.appendByte('?');
-            if (u.raw_query) |rq| {
-                try buf.append(rq);
-            }
-        }
-        if (u.fragment) |f| {
-            try buf.appendByte('#');
-            const ctx = countEscape(f, encoding.fragment);
-            const current = buf.len();
-            try buf.resize(current + ctx.len());
-            escape(buf.toSlice()[current..], ctx, f, encoding.fragment);
-        }
-    }
-
-    // Query parses RawQuery and returns the corresponding values.
-    // It silently discards malformed value pairs.
-    // To check errors use parseQuery.
-    pub fn query(uri: *URL, a: Allocator) !Values {
-        const v = try parseQuery(a, uri.raw_query);
-
-        return v;
-    }
-
-    pub fn string(uri: *URL) ![]const u8 {
-        const alloc = std.heap.page_allocator;
-
-        var buf = &try Buffer.init(alloc, "");
-        defer buf.deinit();
-
-        try uri.encode(buf);
-
-        return buf.toSlice();
-    }
-
-    fn parseInternal(u: *URL, a: *Allocator, raw_url: []const u8, via_request: bool) !void {
-        if (raw_url.len == 0 and via_request) {
-            return error.EmptyURL;
-        }
-        if (mem.eql(u8, raw_url, "*")) {
-            u.path = "*";
-            return;
-        }
-        const scheme = try getScheme(raw_url);
-        var rest: []const u8 = undefined;
-        if (scheme.scheme) |s| {
-            // TODO: lowercase scheme
-            // I'm afraid to pull unicode package dependency here for now, but
-            // shcme must be lowercased.
-            u.scheme = s;
-        }
-        rest = scheme.path;
-        if (hasSuffix(rest, "?") and count(rest, "?") == 1) {
-            u.force_query = true;
-            rest = rest[0 .. rest.len - 1];
-        } else {
-            const s = split(rest, "?", true);
-            rest = s.x;
-            u.raw_query = s.y;
-        }
-        if (!hasPrefix(rest, "/")) {
-            if (u.scheme != null) {
-                u.opaques = rest;
-                return;
-            }
-            if (via_request) {
-                return error.InvalidURL;
-            }
-            // Avoid confusion with malformed schemes, like cache_object:foo/bar.
-            // See golang.org/issue/16822.
-            //
-            // RFC 3986, §3.3:
-            // In addition, a URI reference (Section 4.1) may be a relative-path reference,
-            // in which case the first path segment cannot contain a colon (":") character.
-            const colon = mem.indexOf(u8, rest, ":");
-            const slash = mem.indexOf(u8, rest, "/");
-            if (colon != null and colon.? >= 0 and (slash == null or colon.? < slash.?)) {
-                return error.BadURL;
-            }
-        }
-        if ((u.scheme != null or !via_request and !hasPrefix(rest, "///")) and hasPrefix(rest, "//")) {
-            const x = split(rest[2..], "/", false);
-            if (x.y) |y| {
-                rest = y;
-            } else {
-                rest = "";
-            }
-            const au = try parseAuthority(a, x.x);
-            u.user = au.user;
-            u.host = au.host;
-        }
-        if (rest.len > 0) {
-            try setPath(u, a, rest);
-        }
-        return;
-    }
-
-    const Authority = struct {
-        user: ?UserInfo,
-        host: []const u8,
-    };
-
-    const hostList = struct {
-        host_1: []const u8,
-        host_2: []const u8,
-        host_3: []const u8,
-    };
-
-    fn parseAuthority(allocator: *Allocator, authority: []const u8) !Authority {
-        const idx = lastIndex(authority, "@");
-        var res: Authority = undefined;
-        if (idx == null) {
-            res.host = try parseHost(allocator, authority);
-        } else {
-            res.host = try parseHost(allocator, authority[idx.? + 1 ..]);
-        }
-        if (idx == null) {
-            res.user = null;
-            return res;
-        }
-
-        const user_info = authority[0..idx.?];
-        if (!validUserinfo(user_info)) {
-            return error.InvalidUserInfo;
-        }
-        const s = split(user_info, ":", true);
-        var ctx = try countUneEscape(s.x, encoding.userPassword);
-        const username = try allocator.alloc(u8, ctx.buffer_size);
-        unescape(username, ctx, s.x, encoding.userPassword);
-        if (s.y) |y| {
-            ctx = try countUneEscape(y, encoding.userPassword);
-            const password = try allocator.alloc(u8, ctx.buffer_size);
-            unescape(password, ctx, y, encoding.userPassword);
-            res.user = UserInfo.initWithPassword(username, password);
-        } else {
-            res.user = UserInfo.init(username);
-        }
-        return res;
-    }
-
-    fn parseHost(a: *Allocator, host: []const u8) ![]const u8 {
-        if (hasPrefix(host, "[")) {
-            // Parse an IP-Literal in RFC 3986 and RFC 6874.
-            // E.g., "[fe80::1]", "[fe80::1%25en0]", "[fe80::1]:80".
-            const idx = lastIndex(host, "]");
-            if (idx == null) {
-                // TODO: use result to improve error message
-                return error.BadURL;
-            }
-            const i = idx.?;
-            const colon_port = host[i + 1 ..];
-            if (!validOptionalPort(colon_port)) {
-                return error.BadURL;
-            }
-            // RFC 6874 defines that %25 (%-encoded percent) introduces
-            // the zone identifier, and the zone identifier can use basically
-            // any %-encoding it likes. That's different from the host, which
-            // can only %-encode non-ASCII bytes.
-            // We do impose some restrictions on the zone, to avoid stupidity
-            // like newlines.
-            if (index(host[0..i], "%25")) |zone| {
-                const ctx_1 = try countUneEscape(host[0..zone], encoding.host);
-                const ctx_2 = try countUneEscape(host[zone..i], encoding.zone);
-                const ctx_3 = try countUneEscape(host[i..], encoding.host);
-                const required = ctx_1.buffer_size + ctx_2.buffer_size + ctx_3.buffer_size;
-                var out_buf = try a.alloc(u8, required);
-                unescape(out_buf[0..ctx_1.buffer_size], ctx_1, host[0..zone], encoding.host);
-                unescape(out_buf[ctx_1.buffer_size .. ctx_1.buffer_size + ctx_2.buffer_size], ctx_2, host[zone..i], encoding.zone);
-                unescape(out_buf[ctx_1.buffer_size + ctx_2.buffer_size .. ctx_1.buffer_size + ctx_2.buffer_size + ctx_3.buffer_size], ctx_3, host[i..], encoding.host);
-                return out_buf;
-            }
-        }
-        const ctx = try countUneEscape(host, encoding.host);
-        const out = try a.alloc(u8, ctx.buffer_size);
-        unescape(out, ctx, host, encoding.host);
-        return out;
-    }
-
-    fn validOptionalPort(port: []const u8) bool {
-        if (port.len == 0) {
-            return true;
-        }
-        if (port[0] != ':') {
-            return false;
-        }
-        for (port[1..]) |value| {
-            if (value < '0' or value > '9') {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // validUserinfo reports whether s is a valid userinfo string per RFC 3986
-    // Section 3.2.1:
-    //     userinfo    = *( unreserved / pct-encoded / sub-delims / ":" )
-    //     unreserved  = ALPHA / DIGIT / "-" / "." / "_" / "~"
-    //     sub-delims  = "!" / "$" / "&" / "'" / "(" / ")"
-    //                   / "*" / "+" / "," / ";" / "="
-    //
-    // It doesn't validate pct-encoded. The caller does that via func unescape.
-    fn validUserinfo(s: []const u8) bool {
-        for (s) |r| {
-            if ('A' <= r and r <= 'Z') {
-                continue;
-            }
-            if ('a' <= r and r <= 'z') {
-                continue;
-            }
-            if ('0' <= r and r <= '9') {
-                continue;
-            }
-            switch (r) {
-                '-', '.', '_', ':', '~', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '%', '@' => {},
-                else => {
-                    return false;
-                },
-            }
-        }
-        return true;
-    }
-
-    // escapedPath writes ton buf  the escaped form of u.Path.
-    // In general there are multiple possible escaped forms of any path.
-    // EscapedPath returns u.RawPath when it is a valid escaping of u.Path.
-    // Otherwise EscapedPath ignores u.RawPath and computes an escaped
-    // form on its own.
-    // The String and RequestURI methods use EscapedPath to construct
-    // their results.
-    // In general, code should call EscapedPath instead of
-    // reading u.RawPath directly.
-    fn escapedPath(u: *URL, buf: *Buffer) !void {
-        if (u.raw_path) |raw| {
-            if (validEncodedPath(raw)) {
-                if (countUneEscape(raw, encoding.path)) |ctx| {
-                    try buf.resize(ctx.len());
-                    unescape(buf.toSlice(), ctx, raw, encoding.path);
-                    if (u.path) |p| {
-                        if (buf.eql(p)) {
-                            try buf.resize(0);
-                            try buf.append(raw);
-                            return;
-                        }
-                    }
-                } else |_| {}
-            }
-        }
-
-        if (u.path) |p| {
-            if (mem.eql(u8, p, "*")) {
-                return buf.append("*");
-            }
-
-            const ctx = countEscape(p, encoding.path);
-            try buf.resize(ctx.len());
-            escape(buf.toSlice(), ctx, p, encoding.path);
-        }
-    }
-
-    // validEncodedPath reports whether s is a valid encoded path.
-    // It must not contain any bytes that require escaping during path encoding.
-    fn validEncodedPath(s: []const u8) bool {
-        for (s) |c| {
-            // RFC 3986, Appendix A.
-            // pchar = unreserved / pct-encoded / sub-delims / ":" / "@".
-            // shouldEscape is not quite compliant with the RFC,
-            // so we check the sub-delims ourselves and let
-            // shouldEscape handle the others.
-            switch (c) {
-                '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', ':', '@' => {},
-                '[', ']' => {
-                    // ok - not specified in RFC 3986 but left alone by modern browsers
-                },
-                '%' => {
-                    // ok - percent encoded, will decode
-                },
-                else => {
-                    if (shouldEscape(c, encoding.path)) {
-                        return false;
-                    }
-                },
-            }
-        }
-        return true;
-    }
-};
-
-fn setPath(u: *URL, a: *Allocator, path: []const u8) !void {
-    const uctx = try countUneEscape(path, encoding.path);
-    const raw_path = try a.alloc(u8, uctx.buffer_size);
-    unescape(raw_path, uctx, path, encoding.path);
-    u.path = raw_path;
-    const ectx = countEscape(path, encoding.path);
-    const escaped_path = try a.alloc(u8, ectx.len());
-    escape(escaped_path, ectx, u.path.?, encoding.path);
-    if (!mem.eql(u8, raw_path, escaped_path)) {
-        const e = try a.alloc(u8, path.len);
-        mem.copy(u8, e, path);
-        u.raw_path = e;
-    }
-}
-
-/// hasPrefix returns true if slice s begins with prefix.
-pub fn hasPrefix(s: []const u8, prefix: []const u8) bool {
-    return s.len >= prefix.len and
-        mem.eql(u8, s[0..prefix.len], prefix);
-}
-
-pub fn hasSuffix(s: []const u8, suffix: []const u8) bool {
-    return s.len >= suffix.len and
-        mem.eql(u8, s[(s.len - suffix.len)..], suffix);
-}
-
-// naive count
-pub fn count(s: []const u8, sub: []const u8) usize {
-    var x: usize = 0;
-    var idx: usize = 0;
-    while (idx < s.len) {
-        if (mem.indexOf(u8, s[idx..], sub)) |i| {
-            x += 1;
-            idx += i + sub.len;
-        } else {
-            return x;
-        }
-    }
-    return x;
-}
-
-fn lastIndex(s: []const u8, sub: []const u8) ?usize {
-    return mem.lastIndexOf(u8, s, sub);
-}
-
-fn index(s: []const u8, sub: []const u8) ?usize {
-    return mem.indexOf(u8, s, sub);
-}
-
-pub const UserInfo = struct {
-    username: ?[]const u8,
-    password: ?[]const u8,
-
-    pub fn init(name: []const u8) UserInfo {
-        return UserInfo{
-            .username = name,
-            .password = null,
-        };
-    }
-
-    pub fn initWithPassword(name: []const u8, password: []const u8) UserInfo {
-        return UserInfo{
-            .username = name,
-            .password = password,
-        };
-    }
-
-    pub fn encode(u: *UserInfo, buf: *std.Buffer) !void {
-        if (u.username) |usr| {
-            const ctx = countEscape(usr, encoding.userPassword);
-            const x = buf.len();
-            try buf.resize(x + ctx.len());
-            escape(buf.toSlice()[x..], ctx, usr, encoding.userPassword);
-        }
-        if (u.password) |pass| {
-            try buf.appendByte(':');
-            const ctx = countEscape(pass, encoding.userPassword);
-            const x = buf.len();
-            try buf.resize(x + ctx.len());
-            escape(buf.toSlice()[x..], ctx, pass, encoding.userPassword);
-        }
-    }
-};
-
-// result returns a wrapper struct that helps improve error handling. Panicking
-// in production is bad, and adding more context to errors improves the
-// experience especially with parsing.
-fn result(comptime Value: type, ResultError: type) type {
-    return struct {
-        const Self = @This();
-        value: Result,
-        message: ?[]const u8,
-        pub const Err = ResultError;
-
-        pub fn withErr(e: Err, msg: ?[]const u8) Self {
-            return Self{
-                .value = Result{ .err = e },
-                .message = msg,
-            };
-        }
-
-        pub fn withValue(v: Value) Self {
-            return Self{
-                .value = Result{ .value = v },
-                .message = null,
-            };
-        }
-
-        pub const Result = union(enum) {
-            err: Error,
-            value: Value,
+        queryUnescape(&bufEscape, cut_data2.after) catch {
+            continue;
         };
 
-        pub fn unwrap(self: Self) Error!Value {
-            return switch (self.value) {
-                Error => |err| err,
-                Value => |v| v,
-                else => unreachable,
-            };
-        }
-    };
+        const valueEscaped = try bufEscape.toOwnedSlice();
+        try bufEscape.resize(0);
+
+        try m.add(keyEscaped, valueEscaped);
+    }
+
+    return m;
 }
 
-// U exposes api for parsing url. The current implementation for parsing
-// involves memory allocation. This ensures that all memory allocated for url
-// parsing is freed properly.
-pub const U = struct {
-    // The parsed url object. This will have all fields set to null by default
-    // which will mean that we haven't parsed any url witht he current U
-    // instance.
-    url: URL,
-    // we don't free memory while parsing, instead we free all of it at once
-    // after we are done using the url object.
-    arena: ArenaAllocator,
+pub fn encodeQuery(v: Values) ![:0]u8 {
+    var buf = std.ArrayList(u8).init(v.allocator);
+    defer buf.deinit();
 
-    fn init(a: *Allocator) U {
-        return U{
-            .url = URL{},
-            .arena = ArenaAllocator.init(a),
-        };
+    var alloc = std.heap.ArenaAllocator.init(v.allocator);
+    defer alloc.deinit();
+
+    var keys = try alloc.allocator().alloc([]const u8, v.data.count());
+    var key_i: usize = 0;
+
+    var data = (try v.data.clone()).iterator();
+    while (data.next()) |kv| {
+        keys[key_i] = kv.key_ptr.*;
+        key_i += 1;
     }
 
-    fn parse(self: *U, raw_url: []const u8) !void {
-        const a = &self.arena.allocator;
-        self.url = URL{};
-        try self.url.parse(a, raw_url);
+    sort.block([]const u8, keys, {}, stringSort([]const u8));
+
+    var bufEscape = std.ArrayList(u8).init(v.allocator);
+    defer bufEscape.deinit();
+
+    for (keys) |k| {
+        const vs = v.data.get(k).?;
+
+        try pathEscape(&bufEscape, k);
+
+        const keyEscaped = try bufEscape.toOwnedSlice();
+        try bufEscape.resize(0);
+
+        if (buf.items.len > 0) {
+            try buf.appendSlice("&");
+        }
+
+        try pathEscape(&bufEscape, vs);
+        const vvEscaped = try bufEscape.toOwnedSlice();
+        try bufEscape.resize(0);
+
+        try buf.appendSlice(keyEscaped);
+        try buf.appendSlice("=");
+        try buf.appendSlice(vvEscaped);
     }
 
-    fn deinit(self: *U) void {
-        self.arena.deinit();
-    }
-};
+    return buf.toOwnedSliceSentinel(0);
+}
 
-/// parse parses raw_url using rfc 3986 standard, returning U with the parsed url
-/// object acceible in U.url.
-///
-/// Call u.deinit() when you no longer use the url to free memory.
-pub fn parse(a: *Allocator, raw_url: []const u8) !U {
-    var u = U.init(a);
-    try u.parse(raw_url);
-    return u;
+const testing = std.testing;
+
+test "test Values" {
+    const alloc = std.heap.page_allocator;
+
+    var v = Values.init(alloc);
+
+    try v.set("secret", "secret_val");
+    try v.set("issuer", "issuer_val");
+
+    const url_str = try v.encode();
+    const check = "issuer=issuer_val&secret=secret_val";
+
+    try testing.expectEqualSlices(u8, url_str[0..], check[0..]);
+
+    try testing.expectEqual(v.has("issuer"), true);
+    try testing.expectEqual(v.has("issuer2"), false);
+    
+    try v.set("issuer2", "issuer_val2");
+
+    try testing.expectEqual(v.has("issuer2"), true);
+    
+    _ = v.del("issuer2");
+
+    try testing.expectEqual(v.has("issuer2"), false);
+
+    // =======================
+
+    var uu = try parseQuery(alloc, check);
+
+    try testing.expectEqual(uu.has("secret"), true);
+    try testing.expectEqual(uu.has("issuer"), true);
+    try testing.expectEqual(uu.has("issuer2"), false);
+
+    const got_secret = uu.get("secret").?;
+    const check_secret = "secret_val";
+
+    try testing.expectEqualSlices(u8, got_secret[0..], check_secret[0..]);
+
+    const got_issuer = uu.get("issuer").?;
+    const check_issuer = "issuer_val";
+
+    try testing.expectEqualSlices(u8, got_issuer[0..], check_issuer[0..]);
+
+    const got_issuer2 = uu.get("issuer2");
+
+    try testing.expect(got_issuer2 == null);
+}
+
+test "test Values 2" {
+    const alloc = std.heap.page_allocator;
+
+    var v = Values.init(alloc);
+
+    try v.set("secret", "secret_val data");
+    try v.set("issuer", "issuer_val");
+
+    const url_str = try v.encode();
+    const check = "issuer=issuer_val&secret=secret_val+data";
+
+    try testing.expectEqualSlices(u8, url_str[0..], check[0..]);
+
+    try testing.expectEqual(v.has("issuer"), true);
+    try testing.expectEqual(v.has("issuer2"), false);
+    
+    try v.set("issuer2", "issuer_val2");
+
+    try testing.expectEqual(v.has("issuer2"), true);
+    
+    _ = v.del("issuer2");
+
+    try testing.expectEqual(v.has("issuer2"), false);
+
+    // =======================
+
+    const url_str2 = try encodeQuery(v);
+    const check2 = "issuer=issuer_val&secret=secret_val%20data";
+
+    try testing.expectEqualSlices(u8, url_str2[0..], check2[0..]);
+
+    // =======================
+
+    var uu = try parseQuery(alloc, check);
+
+    try testing.expectEqual(uu.has("secret"), true);
+    try testing.expectEqual(uu.has("issuer"), true);
+    try testing.expectEqual(uu.has("issuer2"), false);
+
+    const got_secret = uu.get("secret").?;
+    const check_secret = "secret_val data";
+
+    try testing.expectEqualSlices(u8, got_secret[0..], check_secret[0..]);
+
+    const got_issuer = uu.get("issuer").?;
+    const check_issuer = "issuer_val";
+
+    try testing.expectEqualSlices(u8, got_issuer[0..], check_issuer[0..]);
+
+    const got_issuer2 = uu.get("issuer2");
+
+    try testing.expect(got_issuer2 == null);
+}
+
+test "URI RFC example 1" {
+    const uri = "foo://example.com:8042/over/there?name=ferret#nose";
+    try std.testing.expectEqual(Uri{
+        .scheme = uri[0..3],
+        .user = null,
+        .password = null,
+        .host = .{ .percent_encoded = uri[6..17] },
+        .port = 8042,
+        .path = .{ .percent_encoded = uri[22..33] },
+        .query = .{ .percent_encoded = uri[34..45] },
+        .fragment = .{ .percent_encoded = uri[46..50] },
+    }, try Uri.parse(uri));
+}
+
+test "URI format" {
+    const uri: Uri = .{
+        .scheme = "file",
+        .user = null,
+        .password = null,
+        .host = null,
+        .port = null,
+        .path = .{ .raw = "/foo/bar/baz" },
+        .query = null,
+        .fragment = null,
+    };
+    try std.testing.expectFmt("file:/foo/bar/baz", "{;/?#}", .{uri});
+}
+
+test "URI format 2" {
+    const uri = "foo://example.com:8042/over/there?name=ferret#nose";
+
+    const uri1: Uri = .{
+        .scheme = uri[0..3],
+        .user = null,
+        .password = null,
+        .host = .{ .percent_encoded = uri[6..17] },
+        .port = 8042,
+        .path = .{ .percent_encoded = uri[22..33] },
+        .query = .{ .percent_encoded = uri[34..45] },
+        .fragment = .{ .percent_encoded = uri[46..50] },
+    };
+    try std.testing.expectFmt(uri, "{;@+/?#}", .{uri1});
+}
+
+test "URI query encoding" {
+    const address = "https://objects.githubusercontent.com/?response-content-type=application%2Foctet-stream";
+    const parsed = try Uri.parse(address);
+
+    // format the URI to percent encode it
+    try std.testing.expectFmt("/?response-content-type=application%2Foctet-stream", "{/?}", .{parsed});
 }
