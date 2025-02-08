@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const sort = std.sort;
+const math = std.math;
 const ascii = std.ascii;
 const testing = std.testing;
 const Buffer = std.Buffer;
@@ -8,179 +9,33 @@ const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const otp = @import("./otp.zig");
-const url = @import("./url.zig");
-const time = @import("./time.zig");
-const bytes = @import("./bytes.zig");
-const base32 = @import("./base32.zig");
+pub const hotp = @import("./hotp.zig");
+pub const time = @import("./time.zig");
 
-pub const Key = struct {
-    orig: []const u8,
-    url: url.URL,
+pub const otp = hotp.otp;
+pub const url = hotp.url;
+pub const bytes = hotp.bytes;
+pub const base32 = hotp.base32;
+pub const otps = hotp.otps;
+pub const otpError = hotp.otpError;
 
-    arena: ArenaAllocator,
-
-    pub fn init(a: *Allocator, orig: []const u8) !Key {
-        const u = try url.parse(a, orig);
-
-        return Key{
-            .orig = orig,
-            .url = u,
-            .arena = ArenaAllocator.init(a),
-        };
-    }
-
-    pub fn deinit(self: *Key) void {
-        self.arena.deinit();
-    }
-
-    pub fn string(self: *Key) []const u8 {
-        return self.orig;
-    }
-
-    pub fn typ(self: *Key) []const u8 {
-        return self.url.host.?;
-    }
-
-    pub fn issuer(self: *Key) []const u8 {
-        const a = &self.arena.allocator;
-        var q = try self.url.query(a);
-
-        const iss = q.get("issuer");
-        
-        if (iss.len != 0) {
-            return iss;
-        }
-
-        const p = bytes.trimLeft(self.url.path.?, "/");
-        const i = bytes.index(p, ":").?;
-
-        if (i < 0) {
-            return "";
-        }
-
-        return p[0..i];
-    }
-
-    pub fn accountName(self: *Key) []const u8 {
-        const p = bytes.trimLeft(self.url.path.?, "/");
-        const i = bytes.index(p, ":").?;
-
-        if (i < 0) {
-            return "";
-        }
-
-        return p[0..i];
-    }
-
-    pub fn secret(self: *Key) ![]const u8 {
-        const a = &self.arena.allocator;
-        var q = try self.url.query(a);
-
-        return q.get("secret");
-    }
-
-    pub fn period(self: *Key) !u32 {
-        const a = &self.arena.allocator;
-        var q = try self.url.query(a);
-
-        const per = q.get("period");
-
-        return @as(u32, per);
-    }
-
-    pub fn digit(self: *Key) !Digits {
-        const a = &self.arena.allocator;
-        var q = try self.url.query(a);
-
-        const dig = q.get("digits");
-
-        if (dig.len == 0) {
-            return Digits.six;
-        } 
-
-        return Digits.eight;
-    }
-
-    pub fn algorithm(self: *Key) !otp.Algorithm {
-        const a = &self.arena.allocator;
-        var q = try self.url.query(a);
-
-        const alg = try ascii.allocLowerString(a, q.get("algorithm"));
-
-        if (bytes.eq(alg, "md5")) {
-            return otp.Algorithm.md5;
-        } else if (bytes.eq(alg, "sha256")) {
-            return otp.Algorithm.sha256;
-        } else if (bytes.eq(alg, "sha512")) {
-            return otp.Algorithm.sha512;
-        }
-
-        return otp.Algorithm.sha1;
-    }
-
-    pub fn urlString(self: *Key) ![]const u8 {
-        const urlStr = try self.url.string();
-
-        return urlStr;
-    }
-};
-
-// =============
-
-pub const Digits = enum {
-    six,
-    eight,
-
-    pub fn string(self: Digits) []const u8 {
-        if (self == .six) {
-            return "6";
-        }
-
-        return "8";
-    }
-
-    // Length returns the number of characters for this Digits.
-    pub fn length(self: Digits) u32 {
-        if (self == .six) {
-            return 6;
-        }
-
-        return 8;
-    }
-
-    // Format converts an integer into the zero-filled size for this Digits.
-    pub fn format(self: Digits, in: u32) ![]const u8 {
-        const allocator = std.heap.page_allocator;
-        defer allocator.deinit();
-
-        const len = self.length();
-
-        const f = try fmt.allocPrint(allocator, "{d:0>{d}}", .{len});
-
-        return try fmt.allocPrint(allocator, f, .{in});
-    }
-};
-
-// =============
-
-pub fn validate(passcode: []const u8, secret: []const u8) bool {
-    const t = time.now();
-
-    return validateCustom(passcode, secret, t, validateOpts{
+pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool {
+    return validateCustom(alloc, passcode, secret, time.now().utc(), validateOpts{
         .period = 30,
         .skew = 1,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
     }) catch false;
 }
 
-pub fn generateCode(secret: []const u8, t: time.Time) ![]const u8 {
-    return generateCodeCustom(secret, t.unix(), validateOpts{
+pub fn generateCode(alloc: Allocator, secret: []const u8, t: time.Time) ![]const u8 {
+    return generateCodeCustom(alloc, secret, t, validateOpts{
         .period = 30,
         .skew = 1,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
     });
 }
 
@@ -192,65 +47,72 @@ pub const validateOpts = struct {
     // than 1 are likely sketchy.
     skew: u32,
     // Digits as part of the input. Defaults to 6.
-    digits: Digits,
+    digits: otps.Digits,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otp.Algorithm,
+    algorithm: otps.Algorithm,
+    // Encoder to use for output code.
+    encoder: otps.Encoder,
 };
 
 // generate Code Custom
-pub fn generateCodeCustom(secret: []const u8, t: i64, opts: validateOpts) ![]const u8 {
+pub fn generateCodeCustom(alloc: Allocator, secret: []const u8, t: time.Time, opts: validateOpts) ![]const u8 {
     var period = opts.period;
-    
     if (period == 0) {
         period = 30;
     }
 
-    const id = try otp.totp(secret, t, opts.digits.length(), period, opts.algorithm);
+    const counter = @as(u64, @intCast(@divFloor(t.unix(), period)));
 
-    var value: [10]u8 = undefined;
-    const size = fmtInt(value[0..], @as(u64, @intCast(id)));
+    const passcode = try hotp.generateCodeCustom(alloc, secret, counter, .{
+        .digits = opts.digits,
+        .algorithm = opts.algorithm,
+        .encoder = opts.encoder,
+    });
 
-    const code = value[size..];
-    return @as([]const u8, code);
-}
-
-pub fn totpValidateCustom(passcode: []const u8, secret: []const u8, t: i64, opts: validateOpts) !bool {
-    const newPasscode = try generateCodeCustom(secret, t, opts);
-
-    return bytes.eq(passcode, newPasscode);
+    return passcode;
 }
 
 // validate Custom
-pub fn validateCustom(passcode: []const u8, secret: []const u8, t: time.Time, opts: validateOpts) !bool {
-    var skew = opts.skew;
+pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8, t: time.Time, opts: validateOpts) !bool {
+    var period = opts.period;
+    if (period == 0) {
+        period = 30;
+    }
 
-    var counter = @divFloor(t.unix(), opts.period);
-    var counter2 = @divFloor(t.unix(), opts.period);
+    var counters = std.ArrayList(u64).init(alloc);
+    defer counters.deinit();
 
-    while (skew > 0) {
-        counter += skew;
+    const counter = @as(i64, @intCast(@divFloor(t.unix(), period)));
 
-        const res = totpValidateCustom(passcode, secret, counter * opts.period, opts) catch false;
+    try counters.append(@as(u64, @intCast(counter)));
+    if (opts.skew > 0) {
+        for (1..opts.skew+1) |i| {
+            try counters.append(@as(u64, @intCast(counter + @as(i64, @intCast(i)))));
+
+            const tmp = counter - @as(i64, @intCast(i));
+            if (tmp > 0) {
+                try counters.append(@as(u64, @intCast(tmp)));
+            } else {
+                try counters.append(@as(u64, math.maxInt(u64)) - @as(u64, @intCast(try math.negateCast(tmp) + 1)));
+            }
+        }
+    }
+
+    const newCounters = try counters.toOwnedSlice();
+
+    for (newCounters) |newCounter| {
+        const res = try hotp.validateCustom(alloc, passcode, newCounter, secret, .{
+            .digits = opts.digits,
+            .algorithm = opts.algorithm,
+            .encoder = opts.encoder,
+        });
         if (res) {
             return true;
         }
-
-        counter2 -= skew;
-        const res2 = totpValidateCustom(passcode, secret, counter2 * opts.period, opts) catch false;
-        if (res2) {
-            return true;
-        }
-
-        skew -= 1;
     }
 
     return false;
 }
-
-pub const generateError = error{
-    ErrGenerateMissingIssuer,
-    ErrGenerateMissingAccountName,
-};
 
 pub const generateOpts = struct {
     // Name of the issuing Organization/Company.
@@ -264,19 +126,19 @@ pub const generateOpts = struct {
     // Secret to store. Defaults to a randomly generated secret of SecretSize.  You should generally leave this empty.
     secret: ?[]const u8,
     // Digits to request. Defaults to 6.
-    digits: Digits,
+    digits: ?otps.Digits,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: ?otp.Algorithm,
+    algorithm: ?otps.Algorithm,
 };
 
-pub fn generate(opts: generateOpts) !Key {
+pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
     // url encode the Issuer/AccountName
     if (opts.issuer.len == 0) {
-        return generateError.ErrGenerateMissingIssuer;
+        return otpError.GenerateMissingIssuer;
     }
 
     if (opts.accountName.len == 0) {
-        return generateError.ErrGenerateMissingAccountName;
+        return otpError.GenerateMissingAccountName;
     }
 
     var newOpts = generateOpts{
@@ -297,89 +159,390 @@ pub fn generate(opts: generateOpts) !Key {
         newOpts.secretSize = 20;
     }
 
+    if (newOpts.digits == null) {
+        newOpts.digits = otps.Digits.Six;
+    }
+
     if (newOpts.algorithm == null) {
-        newOpts.algorithm = otp.Algorithm.sha1;
+        newOpts.algorithm = otps.Algorithm.sha1;
     }
 
     // otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
-    const allocator = std.heap.page_allocator;
     var alloc: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(allocator);
 
     var v: url.Values = url.Values.init(allocator);
 
-    if (newOpts.secret == null) {
+    var secret: []const u8 = undefined;
+    if (newOpts.secret) |val| {
+        secret = try base32.encode(allocator, val, false);
+    } else {
         var s: []u8 = try alloc.allocator().alloc(u8, newOpts.secretSize);
         random.bytes(s[0..]);
 
-        newOpts.secret.? = s;
+        secret = try base32.encode(allocator, s, false);
     }
-
-    const secret = try base32.encode(allocator, newOpts.secret.?, false);
 
     try v.set("secret", secret);
     try v.set("issuer", newOpts.issuer);
 
-    const periodStr = try fmt.allocPrint(allocator, "{s}", .{newOpts.period});
+    const periodStr = try fmt.allocPrint(allocator, "{d}", .{newOpts.period});
 
     try v.set("period", periodStr);
     try v.set("algorithm", newOpts.algorithm.?.string());
-    try v.set("digits", newOpts.digits.string());
+    try v.set("digits", try newOpts.digits.?.string());
 
-    const rawQuery = try encodeQuery(v);
+    const rawQuery = try url.encodeQuery(v);
 
-    var u = url.URL{
+    var pathBuf = std.ArrayList(u8).init(allocator);
+    defer pathBuf.deinit();
+
+    try pathBuf.appendSlice("/");
+    try pathBuf.appendSlice(newOpts.issuer);
+    try pathBuf.appendSlice(":");
+    try pathBuf.appendSlice(newOpts.accountName);
+
+    const path = try pathBuf.toOwnedSlice();
+
+    var u: url.Uri = .{
         .scheme = "otpauth",
-        .host = "totp",
-        .path = "/" + newOpts.issuer + ":" + newOpts.accountName,
-        .raw_query = rawQuery,
+        .user = null,
+        .password = null,
+        .host = .{ .percent_encoded = "totp" },
+        .port = null,
+        .path = .{ .percent_encoded = path },
+        .query = .{ .percent_encoded = rawQuery },
+        .fragment = null,
     };
 
-    return try Key.init(alloc, u.string());
-}
+    var bufUrl = std.ArrayList(u8).init(allocator);
+    defer bufUrl.deinit();
 
-fn fmtInt(buf: []u8, value: u64) usize {
-    var w = buf.len;
-    var v = value;
-    if (v == 0) {
-        w -= 1;
-        buf[w] = '0';
-    } else {
-        while (v > 0) {
-            w -= 1;
-            buf[w] = @as(u8, @intCast(@mod(v, 10))) + '0';
-            v /= 10;
-        }
-    }
-    
-    return w;
-}
+    try u.format(";@+/?#", .{}, bufUrl.writer());
 
-test "test generateCode" {
-    const secret = "test-data";
-    const t = time.now();
+    const urlStr = try bufUrl.toOwnedSlice();
 
-    const code = try generateCode(secret, t);
-
-    const res = validate(code, secret);
-
-    try testing.expectEqual(true, res);
+    return try otps.Key.init(allocator, urlStr);
 }
 
 test "test generate" {
+    const alloc = std.heap.page_allocator;
+
     const secret = "test-data";
 
-    const key = try generate(generateOpts{
-        .issuer = "issuer",
+    var key = try generate(alloc, .{
+        .issuer = "Example",
         .accountName = "accountName",
         .period = 30,
         .secretSize = 8,
         .secret = secret,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
     });
 
-    const keyurl = try key.urlString();
+    const keyurl = key.urlString();
+    const check = "otpauth://totp/Example:accountName?issuer=Example&period=30&digits=6&secret=ORSXG5BNMRQXIYI&algorithm=SHA1";
 
-    try testing.expectFmt("123erty", "{s}", .{keyurl});
+    try testing.expectFmt(check, "{s}", .{keyurl});
+}
+
+test "test generate no secret" {
+    const alloc = std.heap.page_allocator;
+
+    var key = try generate(alloc, .{
+        .issuer = "Example",
+        .accountName = "accountName",
+        .period = 30,
+        .secretSize = 8,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    const keyurl = key.urlString();
+
+    try testing.expectEqual(104, keyurl.len);
+}
+
+// Test vectors from http://tools.ietf.org/html/rfc6238#appendix-B
+test "test ValidateRFCMatrix" {
+    const alloc = std.heap.page_allocator;
+    
+    const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
+    const secSha256 = try base32.encode(alloc, "12345678901234567890123456789012", true);
+    const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
+    
+    const optsSha1 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+    const optsSha256 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha256,
+        .encoder = otps.Encoder.default,
+    };
+    const optsSha512 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha512,
+        .encoder = otps.Encoder.default,
+    };
+
+    var t = time.Time.fromTimestamp(59).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "46119246", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "90693936", secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1111111109).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "07081804", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "68084774", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "25091201", secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1111111111).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "14050471", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "67062674", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "99943326", secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1234567890).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "89005924", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "91819424", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "93441116", secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(2000000000).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "69279037", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "90698825", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "38618901", secSha512, t, optsSha512));
+
+    // sha1 20000000000 65353130
+    // sha256 20000000000 77737706
+    // sha512 20000000000 47863826
+}
+
+test "test GenerateRFCMatrix" {
+    const alloc = std.heap.page_allocator;
+    
+    const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
+    const secSha256 = try base32.encode(alloc, "12345678901234567890123456789012", true);
+    const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
+
+    const optsSha1 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+    const optsSha256 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha256,
+        .encoder = otps.Encoder.default,
+    };
+    const optsSha512 = validateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha512,
+        .encoder = otps.Encoder.default,
+    };
+
+    var t = time.Time.fromTimestamp(59).utc();
+    try testing.expectEqualStrings("94287082", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("46119246", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("90693936", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1111111109).utc();
+    try testing.expectEqualStrings("07081804", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("68084774", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("25091201", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1111111111).utc();
+    try testing.expectEqualStrings("14050471", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("67062674", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("99943326", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(1234567890).utc();
+    try testing.expectEqualStrings("89005924", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("91819424", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("93441116", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(2000000000).utc();
+    try testing.expectEqualStrings("69279037", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("90698825", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("38618901", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+}
+
+test "test ValidateSkew" {
+    const alloc = std.heap.page_allocator;
+
+    const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
+
+    const optsSha1 = validateOpts{
+        .period = 0,
+        .skew = 1,
+        .digits = otps.Digits.Eight,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+    
+    var t = time.Time.fromTimestamp(29).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
+    
+    t = time.Time.fromTimestamp(59).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
+    
+    t = time.Time.fromTimestamp(61).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
+}
+
+test "test generate 2" {
+    const alloc = std.heap.page_allocator;
+
+    var key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqualStrings("SnakeOil", key.issuer());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
+    try testing.expectEqual(32, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqual(32, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 0,
+        .secret = "helloworld",
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    const sec = try base32.decode(alloc, key.secret());
+    defer alloc.free(sec);
+
+    try testing.expectEqualStrings("helloworld", sec);
+
+    // ===================
+
+    var errTrue: bool = false;
+    _ = generate(alloc, generateOpts{
+        .issuer = "",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    }) catch |err| {
+        errTrue = true;
+        try testing.expectEqual(otpError.GenerateMissingIssuer, err);
+    };
+    try testing.expectEqual(true, errTrue);
+
+    errTrue = false;
+    try testing.expectEqual(false, errTrue);
+    _ = generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "",
+        .period = 0,
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    }) catch |err| {
+        errTrue = true;
+        try testing.expectEqual(otpError.GenerateMissingAccountName, err);
+    };
+    try testing.expectEqual(true, errTrue);
+
+    // ===================
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = null,
+    });
+
+    try testing.expectEqual(32, key.secret().len);
+
+}
+
+test "test GoogleLowerCaseSecret" {
+    const alloc = std.heap.page_allocator;
+
+    const urlStr = "otpauth://totp/Google%3Afoo%40example.com?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&issuer=Google";
+
+    var key = try otps.Key.init(alloc, urlStr);
+
+    const sec = key.secret();
+    const check = "qlt6vmy6svfx4bt4rpmisaiyol6hihca";
+
+    try testing.expectFmt(check, "{s}", .{sec});
+
+    const n = time.now().utc();
+    const passcode = try generateCode(alloc, key.secret(), n);
+
+    const res = validate(alloc, passcode, key.secret());
+
+    try testing.expectEqual(true, res);
+}
+
+test "test SteamSecret" {
+    const alloc = std.heap.page_allocator;
+
+    const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
+
+    var key = try otps.Key.init(alloc, urlStr);
+
+    const sec = key.secret();
+    const check = "qlt6vmy6svfx4bt4rpmisaiyol6hihca";
+
+    try testing.expectFmt(check, "{s}", .{sec});
+    try testing.expectEqual(otps.Encoder.steam, key.encoder());
+    try testing.expectEqual(5, key.digits().length());
+
+    const n = time.now().utc();
+    const opts = validateOpts{
+        .period = key.period(),
+        .skew = 0,
+        .digits = key.digits(),
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = key.encoder(),
+    };
+    const passcode = try generateCodeCustom(alloc, key.secret(), n, opts);
+
+    try testing.expectEqual(passcode.len, key.digits().length());
+
+    const valid = validateCustom(alloc, passcode, key.secret(), n, opts);
+
+    try testing.expectEqual(true, valid);
 }

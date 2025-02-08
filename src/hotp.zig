@@ -8,229 +8,362 @@ const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const otp = @import("./otp.zig");
-const otp s= @import("./otps.zig");
-const url = @import("./url.zig");
-const time = @import("./time.zig");
-const bytes = @import("./bytes.zig");
-const base32 = @import("./base32.zig");
+pub const otp = @import("./otp.zig");
+pub const url = @import("./url.zig");
+pub const bytes = @import("./bytes.zig");
 
-pub fn validate(passcode: []const u8, secret: []const u8) bool {
-    const t = time.now();
+pub const base32 = otp.base32;
+pub const otps = otp.otps;
+pub const otpError = otps.otpError;
 
-    return validateCustom(passcode, secret, t, validateOpts{
-        .period = 30,
-        .skew = 1,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+pub fn validate(alloc: Allocator, passcode: []const u8, counter: u64, secret: []const u8) bool {
+    return validateCustom(alloc, passcode, counter, secret, validateOpts{
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
     }) catch false;
 }
 
-pub fn generateCode(secret: []const u8, t: time.Time) ![]const u8 {
-    return generateCodeCustom(secret, t.unix(), validateOpts{
-        .period = 30,
-        .skew = 1,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const u8 {
+    return generateCodeCustom(alloc, secret, counter, validateOpts{
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
     });
 }
 
 pub const validateOpts = struct {
-    // Number of seconds a TOTP hash is valid for. Defaults to 30 seconds.
-    period: u32,
-    // Periods before or after the current time to allow.  Value of 1 allows up to Period
-    // of either side of the specified time.  Defaults to 0 allowed skews.  Values greater
-    // than 1 are likely sketchy.
-    skew: u32,
     // Digits as part of the input. Defaults to 6.
-    digits: Digits,
+    digits: otps.Digits,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otp.Algorithm,
+    algorithm: otps.Algorithm,
+    // Encoder to use for output code.
+    encoder: otps.Encoder,
 };
 
 // generate Code Custom
-pub fn generateCodeCustom(secret: []const u8, t: i64, opts: validateOpts) ![]const u8 {
-    var period = opts.period;
+pub fn generateCodeCustom(alloc: Allocator, secret: []const u8, counter: u64, opts: validateOpts) ![]const u8 {
+    const newSecret = try ascii.allocUpperString(alloc, secret);
+    defer alloc.free(newSecret);
     
-    if (period == 0) {
-        period = 30;
+    const key = base32.decode(alloc, newSecret) catch {
+        return otpError.ValidateSecretInvalidBase32;
+    };
+    defer alloc.free(key);
+
+    switch (opts.encoder) {
+        .steam => {
+            const code = try otp.steam_guard(alloc, key, counter, opts.digits.length(), opts.algorithm);
+            return @as([]const u8, code);
+        },
+        else => {
+            const code = try otp.hotp(alloc, key, counter, opts.digits.length(), opts.algorithm);
+            return @as([]const u8, try opts.digits.format(code));
+        }
     }
-
-    const id = try otp.totp(secret, t, opts.digits.length(), period, opts.algorithm);
-
-    var value: [10]u8 = undefined;
-    const size = fmtInt(value[0..], @as(u64, @intCast(id)));
-
-    const code = value[size..];
-    return @as([]const u8, code);
-}
-
-pub fn totpValidateCustom(passcode: []const u8, secret: []const u8, t: i64, opts: validateOpts) !bool {
-    const newPasscode = try generateCodeCustom(secret, t, opts);
-
-    return bytes.eq(passcode, newPasscode);
 }
 
 // validate Custom
-pub fn validateCustom(passcode: []const u8, secret: []const u8, t: time.Time, opts: validateOpts) !bool {
-    var skew = opts.skew;
-
-    var counter = @divFloor(t.unix(), opts.period);
-    var counter2 = @divFloor(t.unix(), opts.period);
-
-    while (skew > 0) {
-        counter += skew;
-
-        const res = totpValidateCustom(passcode, secret, counter * opts.period, opts) catch false;
-        if (res) {
-            return true;
-        }
-
-        counter2 -= skew;
-        const res2 = totpValidateCustom(passcode, secret, counter2 * opts.period, opts) catch false;
-        if (res2) {
-            return true;
-        }
-
-        skew -= 1;
+pub fn validateCustom(alloc: Allocator, passcode: []const u8, counter: u64, secret: []const u8, opts: validateOpts) !bool {
+    if (passcode.len != opts.digits.length()) {
+        return otpError.ValidateInputInvalidLength;
     }
 
-    return false;
-}
+    const otpstr = try generateCodeCustom(alloc, secret, counter, opts);
 
-pub const generateError = error{
-    ErrGenerateMissingIssuer,
-    ErrGenerateMissingAccountName,
-};
+    return bytes.eq(passcode, otpstr);
+}
 
 pub const generateOpts = struct {
     // Name of the issuing Organization/Company.
     issuer: []const u8,
     // Name of the User's Account (eg, email address)
     accountName: []const u8,
-    // Number of seconds a TOTP hash is valid for. Defaults to 30 seconds.
-    period: u32,
     // Size in size of the generated Secret. Defaults to 20 bytes.
     secretSize: u32,
     // Secret to store. Defaults to a randomly generated secret of SecretSize.  You should generally leave this empty.
     secret: ?[]const u8,
     // Digits to request. Defaults to 6.
-    digits: Digits,
+    digits: otps.Digits,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: ?otp.Algorithm,
+    algorithm: ?otps.Algorithm,
 };
 
-pub fn generate(opts: generateOpts) !Key {
+pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
     // url encode the Issuer/AccountName
     if (opts.issuer.len == 0) {
-        return generateError.ErrGenerateMissingIssuer;
+        return otpError.GenerateMissingIssuer;
     }
 
     if (opts.accountName.len == 0) {
-        return generateError.ErrGenerateMissingAccountName;
+        return otpError.GenerateMissingAccountName;
     }
 
     var newOpts = generateOpts{
         .issuer = opts.issuer,
         .accountName = opts.accountName,
-        .period = opts.period,
         .secretSize = opts.secretSize,
         .secret = opts.secret,
         .digits = opts.digits,
         .algorithm = opts.algorithm,
     };
 
-    if (newOpts.period == 0) {
-        newOpts.period = 30;
-    }
-
     if (newOpts.secretSize == 0) {
-        newOpts.secretSize = 20;
+        newOpts.secretSize = 10;
     }
 
     if (newOpts.algorithm == null) {
         newOpts.algorithm = otp.Algorithm.sha1;
     }
 
-    // otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
+    // otpauth://hotp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
-    const allocator = std.heap.page_allocator;
     var alloc: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(allocator);
 
     var v: url.Values = url.Values.init(allocator);
 
-    if (newOpts.secret == null) {
+    var secret: []const u8 = undefined;
+    if (newOpts.secret) |val| {
+        secret = try base32.encode(allocator, val, false);
+    } else {
         var s: []u8 = try alloc.allocator().alloc(u8, newOpts.secretSize);
         random.bytes(s[0..]);
 
-        newOpts.secret.? = s;
+        secret = try base32.encode(allocator, s, false);
     }
-
-    const secret = try base32.encode(allocator, newOpts.secret.?, false);
 
     try v.set("secret", secret);
     try v.set("issuer", newOpts.issuer);
-
-    const periodStr = try fmt.allocPrint(allocator, "{s}", .{newOpts.period});
-
-    try v.set("period", periodStr);
     try v.set("algorithm", newOpts.algorithm.?.string());
-    try v.set("digits", newOpts.digits.string());
+    try v.set("digits", try newOpts.digits.string());
 
-    const rawQuery = try encodeQuery(v);
+    const rawQuery = try url.encodeQuery(v);
 
-    var u = url.URL{
+    var pathBuf = std.ArrayList(u8).init(allocator);
+    defer pathBuf.deinit();
+
+    try pathBuf.appendSlice("/");
+    try pathBuf.appendSlice(newOpts.issuer);
+    try pathBuf.appendSlice(":");
+    try pathBuf.appendSlice(newOpts.accountName);
+
+    const path = try pathBuf.toOwnedSlice();
+
+    var u: url.Uri = .{
         .scheme = "otpauth",
-        .host = "totp",
-        .path = "/" + newOpts.issuer + ":" + newOpts.accountName,
-        .raw_query = rawQuery,
+        .user = null,
+        .password = null,
+        .host = .{ .percent_encoded = "hotp" },
+        .port = null,
+        .path = .{ .percent_encoded = path },
+        .query = .{ .percent_encoded = rawQuery },
+        .fragment = null,
     };
 
-    return try Key.init(alloc, u.string());
-}
+    var bufUrl = std.ArrayList(u8).init(allocator);
+    defer bufUrl.deinit();
 
-fn fmtInt(buf: []u8, value: u64) usize {
-    var w = buf.len;
-    var v = value;
-    if (v == 0) {
-        w -= 1;
-        buf[w] = '0';
-    } else {
-        while (v > 0) {
-            w -= 1;
-            buf[w] = @as(u8, @intCast(@mod(v, 10))) + '0';
-            v /= 10;
-        }
-    }
-    
-    return w;
+    try u.format(";@+/?#", .{}, bufUrl.writer());
+
+    const urlStr = try bufUrl.toOwnedSlice();
+
+    return try otps.Key.init(allocator, urlStr);
 }
 
 test "test generateCode" {
+    const alloc = std.heap.page_allocator;
+
     const secret = "test-data";
-    const t = time.now();
+    const counter: u64 = 6;
 
-    const code = try generateCode(secret, t);
+    const passcode = try generateCode(alloc, secret, counter);
 
-    const res = validate(code, secret);
+    const res = validate(alloc, passcode, counter, secret);
 
     try testing.expectEqual(true, res);
 }
 
 test "test generate" {
+    const alloc = std.heap.page_allocator;
+
     const secret = "test-data";
 
-    const key = try generate(generateOpts{
-        .issuer = "issuer",
+    var key = try generate(alloc, generateOpts{
+        .issuer = "Example",
         .accountName = "accountName",
-        .period = 30,
         .secretSize = 8,
         .secret = secret,
-        .digits = Digits.six,
-        .algorithm = otp.Algorithm.sha1,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
     });
 
-    const keyurl = try key.urlString();
+    const keyurl = key.urlString();
+    const check = "otpauth://hotp/Example:accountName?issuer=Example&digits=6&secret=ORSXG5BNMRQXIYI&algorithm=SHA1";
 
-    try testing.expectFmt("123erty", "{s}", .{keyurl});
+    try testing.expectFmt(check, "{s}", .{keyurl});
+}
+
+test "test generate no secret" {
+    const alloc = std.heap.page_allocator;
+
+    var key = try generate(alloc, generateOpts{
+        .issuer = "Example",
+        .accountName = "accountName",
+        .secretSize = 8,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    const keyurl = key.urlString();
+
+    try testing.expectEqual(94, keyurl.len);
+}
+
+// Test values from http://tools.ietf.org/html/rfc4226#appendix-D
+test "test ValidateRFCMatrix" {
+    const alloc = std.heap.page_allocator;
+    
+    const secret = try base32.encode(alloc, "12345678901234567890", true);
+    const opts = validateOpts{
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+
+    try testing.expectEqual(true, validateCustom(alloc, "755224", 0, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "287082", 1, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "359152", 2, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "969429", 3, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "338314", 4, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "254676", 5, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "287922", 6, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "162583", 7, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "399871", 8, secret, opts));
+    try testing.expectEqual(true, validateCustom(alloc, "520489", 9, secret, opts));
+}
+
+test "test GenerateRFCMatrix" {
+    const alloc = std.heap.page_allocator;
+    
+    const secret = try base32.encode(alloc, "12345678901234567890", true);
+    const opts = validateOpts{
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+
+    try testing.expectEqualStrings("755224", try generateCodeCustom(alloc, secret, 0, opts));
+    try testing.expectEqualStrings("287082", try generateCodeCustom(alloc, secret, 1, opts));
+    try testing.expectEqualStrings("359152", try generateCodeCustom(alloc, secret, 2, opts));
+    try testing.expectEqualStrings("969429", try generateCodeCustom(alloc, secret, 3, opts));
+    try testing.expectEqualStrings("338314", try generateCodeCustom(alloc, secret, 4, opts));
+    try testing.expectEqualStrings("254676", try generateCodeCustom(alloc, secret, 5, opts));
+    try testing.expectEqualStrings("287922", try generateCodeCustom(alloc, secret, 6, opts));
+    try testing.expectEqualStrings("162583", try generateCodeCustom(alloc, secret, 7, opts));
+    try testing.expectEqualStrings("399871", try generateCodeCustom(alloc, secret, 8, opts));
+    try testing.expectEqualStrings("520489", try generateCodeCustom(alloc, secret, 9, opts));
+}
+
+test "test ValidatePadding" {
+    const alloc = std.heap.page_allocator;
+    
+    const opts = validateOpts{
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+        .encoder = otps.Encoder.default,
+    };
+
+    // TestValidatePadding
+    try testing.expectEqual(true, validateCustom(alloc, "831097", 0, "JBSWY3DPEHPK3PX", opts));
+
+    // TestValidateLowerCaseSecret
+    try testing.expectEqual(true, validateCustom(alloc, "831097", 0, "jbswy3dpehpk3px", opts));
+}
+
+test "test generate 2" {
+    const alloc = std.heap.page_allocator;
+
+    var key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqualStrings("SnakeOil", key.issuer());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
+    try testing.expectEqual(16, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqual(32, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .secretSize = 0,
+        .secret = "helloworld",
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    const sec = try base32.decode(alloc, key.secret());
+    defer alloc.free(sec);
+
+    try testing.expectEqualStrings("helloworld", sec);
+
+    // ===================
+
+    var errTrue: bool = false;
+    _ = generate(alloc, generateOpts{
+        .issuer = "",
+        .accountName = "alice@example.com",
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    }) catch |err| {
+        errTrue = true;
+        try testing.expectEqual(otpError.GenerateMissingIssuer, err);
+    };
+    try testing.expectEqual(true, errTrue);
+
+    errTrue = false;
+    try testing.expectEqual(false, errTrue);
+    _ = generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "",
+        .secretSize = 0,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    }) catch |err| {
+        errTrue = true;
+        try testing.expectEqual(otpError.GenerateMissingAccountName, err);
+    };
+    try testing.expectEqual(true, errTrue);
+
+    // ===================
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = null,
+    });
+
+    try testing.expectEqual(32, key.secret().len);
+
 }

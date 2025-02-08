@@ -9,6 +9,14 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const url = @import("./url.zig");
 const bytes = @import("./bytes.zig");
 
+pub const otpError = error{
+    ValidateSecretInvalidBase32,
+    ValidateInputInvalidLength,
+
+    GenerateMissingIssuer,
+    GenerateMissingAccountName,
+};
+
 pub const Key = struct {
     orig: []const u8,
     url: url.Uri,
@@ -188,8 +196,9 @@ pub const Algorithm = enum {
         };
     }
 
-    pub fn hash(self: Algorithm, msg: []const u8, key: []const u8) []u8 {
-        var hashed: []u8 = undefined;
+    pub fn hash(self: Algorithm, alloc: Allocator, msg: []const u8, key: []const u8) ![]u8 {
+        var buf = std.ArrayList(u8).init(alloc);
+        defer buf.deinit();
 
         switch (self) {
             .sha1 => {
@@ -198,7 +207,7 @@ pub const Algorithm = enum {
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                hashed = hmac[0..];
+                try buf.appendSlice(hmac[0..]);
             },
             .sha256 => {
                 var h = crypto.auth.hmac.sha2.HmacSha256.init(key);
@@ -206,7 +215,7 @@ pub const Algorithm = enum {
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                hashed = hmac[0..];
+                try buf.appendSlice(hmac[0..]);
             },
             .sha512 => {
                 var h = crypto.auth.hmac.sha2.HmacSha512.init(key);
@@ -214,7 +223,7 @@ pub const Algorithm = enum {
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                hashed = hmac[0..];
+                try buf.appendSlice(hmac[0..]);
             },
             else => {
                 var h = crypto.auth.hmac.HmacMd5.init(key);
@@ -222,11 +231,11 @@ pub const Algorithm = enum {
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                hashed = hmac[0..];
+                try buf.appendSlice(hmac[0..]);
             },
         }
 
-        return hashed;
+        return try buf.toOwnedSlice();
     }
 };
 
@@ -425,10 +434,12 @@ test "test Algorithm" {
     const msg = "test data";
     const key = "test key";
 
-    // try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", Algorithm.md5.hash(msg, key));
-    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", Algorithm.sha1.hash(msg, key));
-    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", Algorithm.sha256.hash(msg, key));
-    // try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", Algorithm.sha512.hash(msg, key));
+    const alloc = std.heap.page_allocator;
+
+    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", try Algorithm.md5.hash(alloc, msg, key));
+    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", try Algorithm.sha1.hash(alloc, msg, key));
+    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", try Algorithm.sha256.hash(alloc, msg, key));
+    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", try Algorithm.sha512.hash(alloc, msg, key));
 
 }
 
