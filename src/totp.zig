@@ -90,10 +90,10 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
             try counters.append(@as(u64, @intCast(counter + @as(i64, @intCast(i)))));
 
             const tmp = counter - @as(i64, @intCast(i));
-            if (tmp > 0) {
+            if (tmp >= 0) {
                 try counters.append(@as(u64, @intCast(tmp)));
             } else {
-                try counters.append(@as(u64, math.maxInt(u64)) - @as(u64, @intCast(try math.negateCast(tmp) + 1)));
+                try counters.append(@as(u64, math.maxInt(u64)) - @as(u64, @intCast(@abs(tmp))) + 1);
             }
         }
     }
@@ -319,9 +319,10 @@ test "test ValidateRFCMatrix" {
     try testing.expectEqual(true, try validateCustom(alloc, "90698825", secSha256, t, optsSha256));
     try testing.expectEqual(true, try validateCustom(alloc, "38618901", secSha512, t, optsSha512));
 
-    // sha1 20000000000 65353130
-    // sha256 20000000000 77737706
-    // sha512 20000000000 47863826
+    t = time.Time.fromTimestamp(20000000000).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "65353130", secSha1, t, optsSha1));
+    try testing.expectEqual(true, try validateCustom(alloc, "77737706", secSha256, t, optsSha256));
+    try testing.expectEqual(true, try validateCustom(alloc, "47863826", secSha512, t, optsSha512));
 }
 
 test "test GenerateRFCMatrix" {
@@ -377,6 +378,11 @@ test "test GenerateRFCMatrix" {
     try testing.expectEqualStrings("69279037", try generateCodeCustom(alloc, secSha1, t, optsSha1));
     try testing.expectEqualStrings("90698825", try generateCodeCustom(alloc, secSha256, t, optsSha256));
     try testing.expectEqualStrings("38618901", try generateCodeCustom(alloc, secSha512, t, optsSha512));
+
+    t = time.Time.fromTimestamp(20000000000).utc();
+    try testing.expectEqualStrings("65353130", try generateCodeCustom(alloc, secSha1, t, optsSha1));
+    try testing.expectEqualStrings("77737706", try generateCodeCustom(alloc, secSha256, t, optsSha256));
+    try testing.expectEqualStrings("47863826", try generateCodeCustom(alloc, secSha512, t, optsSha512));
 
 }
 
