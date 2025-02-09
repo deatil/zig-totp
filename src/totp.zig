@@ -10,12 +10,12 @@ const Allocator = std.mem.Allocator;
 
 pub const hotp = @import("./hotp.zig");
 pub const time = @import("./time.zig");
-
 pub const otp = hotp.otp;
+pub const otps = hotp.otps;
 pub const url = hotp.url;
+pub const Uri = hotp.Uri;
 pub const bytes = hotp.bytes;
 pub const base32 = hotp.base32;
-pub const otps = hotp.otps;
 pub const otpError = hotp.otpError;
 
 pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool {

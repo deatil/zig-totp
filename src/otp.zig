@@ -5,6 +5,9 @@ const Allocator = std.mem.Allocator;
 
 pub const base32 = @import("./base32.zig");
 pub const otps = @import("./otps.zig");
+pub const url = otps.url;
+pub const Uri = otps.Uri;
+pub const bytes = otps.bytes;
 pub const Algorithm = otps.Algorithm;
 
 pub fn hotp(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Algorithm) !u32 {
@@ -33,11 +36,11 @@ pub fn steam_guard(alloc: Allocator, key: []const u8, counter: u64, digit: u32, 
     var hmac: []u8 = try alg.hash(alloc, counter_bytes[0..], key);
 
     const offset = hmac[hmac.len - 1] & 0xf;
-    const bytes = hmac[offset .. offset + 4];
-    const result = (@as(u32, bytes[3]) & 0xff) |
-        @as(u32, bytes[2] & 0xff) << 8 |
-        @as(u32, bytes[1] & 0xff) << 16 |
-        @as(u32, bytes[0] & 0x7f) << 24;
+    const hmac_bytes = hmac[offset .. offset + 4];
+    const result = (@as(u32, hmac_bytes[3]) & 0xff) |
+        @as(u32, hmac_bytes[2] & 0xff) << 8 |
+        @as(u32, hmac_bytes[1] & 0xff) << 16 |
+        @as(u32, hmac_bytes[0] & 0x7f) << 24;
 
     var fc = result;
 

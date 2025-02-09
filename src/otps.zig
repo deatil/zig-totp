@@ -5,8 +5,9 @@ const testing = std.testing;
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 
-const url = @import("./url.zig");
-const bytes = @import("./bytes.zig");
+pub const url = @import("./url.zig");
+pub const Uri = url.Uri;
+pub const bytes = url.bytes;
 
 pub const otpError = error{
     ValidateSecretInvalidBase32,
@@ -18,13 +19,13 @@ pub const otpError = error{
 
 pub const Key = struct {
     orig: []const u8,
-    url: url.Uri,
+    url: Uri,
     query: url.Values,
 
     alloc: Allocator,
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
-        const u = try url.Uri.parse(orig);
+        const u = try Uri.parse(orig);
 
         var query: []const u8 = "";
         if (u.query) |val| {
