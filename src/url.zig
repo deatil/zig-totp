@@ -3,7 +3,6 @@ const mem = std.mem;
 const sort = std.sort;
 const StringHashMap = std.hash_map.StringHashMap;
 const Allocator = mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const ArrayList = std.ArrayList(u8);
 
@@ -380,14 +379,15 @@ pub const Values = struct {
     /// Encode encodes the values into `URL encoded` form
     /// ("bar=baz&foo=quux") sorted by key.
     pub fn encode(self: *Values) ![:0]u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        const alloc = self.allocator;
+
+        var buf = std.ArrayList(u8).init(alloc);
         defer buf.deinit();
 
-        var alloc = std.heap.ArenaAllocator.init(self.allocator);
-        defer alloc.deinit();
-
-        var keys = try alloc.allocator().alloc([]const u8, self.data.count());
+        var keys = try alloc.alloc([]const u8, self.data.count());
         var key_i: usize = 0;
+
+        defer alloc.free(keys);
 
         var data = (try self.data.clone()).iterator();
         while (data.next()) |kv| {
@@ -397,7 +397,7 @@ pub const Values = struct {
 
         sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-        var bufEscape = std.ArrayList(u8).init(self.allocator);
+        var bufEscape = std.ArrayList(u8).init(alloc);
         defer bufEscape.deinit();
 
         for (keys) |k| {
@@ -479,14 +479,15 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
 }
 
 pub fn encodeQuery(v: Values) ![:0]u8 {
-    var buf = std.ArrayList(u8).init(v.allocator);
+    const alloc = v.allocator;
+
+    var buf = std.ArrayList(u8).init(alloc);
     defer buf.deinit();
 
-    var alloc = std.heap.ArenaAllocator.init(v.allocator);
-    defer alloc.deinit();
-
-    var keys = try alloc.allocator().alloc([]const u8, v.data.count());
+    var keys = try alloc.alloc([]const u8, v.data.count());
     var key_i: usize = 0;
+
+    defer alloc.free(keys);
 
     var data = (try v.data.clone()).iterator();
     while (data.next()) |kv| {
@@ -496,7 +497,7 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
 
     sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-    var bufEscape = std.ArrayList(u8).init(v.allocator);
+    var bufEscape = std.ArrayList(u8).init(alloc);
     defer bufEscape.deinit();
 
     for (keys) |k| {

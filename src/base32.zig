@@ -34,6 +34,7 @@ pub fn encode(alloc: Allocator, input: []const u8, padding: bool) ![]u8 {
             try output.resize(len - num_extra);
         }
     }
+
     return output.toOwnedSlice();
 }
 
@@ -66,6 +67,7 @@ pub fn decode(alloc: Allocator, input: []const u8) ![]u8 {
         try output.append((buf[4] << 7) | (buf[5] << 2) | (buf[6] >> 3));
         try output.append((buf[6] << 5) | (buf[7]));
     }
+    
     try output.resize(output_len);
     return output.toOwnedSlice();
 }

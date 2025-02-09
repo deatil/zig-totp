@@ -6,7 +6,6 @@ const testing = std.testing;
 const Buffer = std.Buffer;
 const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 pub const otp = @import("./otp.zig");
 pub const url = @import("./url.zig");
@@ -17,7 +16,7 @@ pub const otps = otp.otps;
 pub const otpError = otps.otpError;
 
 pub fn validate(alloc: Allocator, passcode: []const u8, counter: u64, secret: []const u8) bool {
-    return validateCustom(alloc, passcode, counter, secret, validateOpts{
+    return validateCustom(alloc, passcode, counter, secret, .{
         .digits = otps.Digits.Six,
         .algorithm = otps.Algorithm.sha1,
         .encoder = otps.Encoder.default,
@@ -25,7 +24,7 @@ pub fn validate(alloc: Allocator, passcode: []const u8, counter: u64, secret: []
 }
 
 pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const u8 {
-    return generateCodeCustom(alloc, secret, counter, validateOpts{
+    return generateCodeCustom(alloc, secret, counter, .{
         .digits = otps.Digits.Six,
         .algorithm = otps.Algorithm.sha1,
         .encoder = otps.Encoder.default,
@@ -118,16 +117,16 @@ pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
 
     // otpauth://hotp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
-    var alloc: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(allocator);
-
-    var v: url.Values = url.Values.init(allocator);
+    var v = url.Values.init(allocator);
 
     var secret: []const u8 = undefined;
     if (newOpts.secret) |val| {
         secret = try base32.encode(allocator, val, false);
     } else {
-        var s: []u8 = try alloc.allocator().alloc(u8, newOpts.secretSize);
+        var s: []u8 = try allocator.alloc(u8, newOpts.secretSize);
         random.bytes(s[0..]);
+
+        defer allocator.free(s);
 
         secret = try base32.encode(allocator, s, false);
     }
@@ -296,6 +295,17 @@ test "test generate 2" {
     try testing.expectEqualStrings("SnakeOil", key.issuer());
     try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(16, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "Snake Oil",
+        .accountName = "alice@example.com",
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqual(true, bytes.contains(key.urlString(), "issuer=Snake%20Oil"));
 
     key = try generate(alloc, generateOpts{
         .issuer = "SnakeOil",

@@ -7,7 +7,6 @@ const testing = std.testing;
 const Buffer = std.Buffer;
 const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 pub const hotp = @import("./hotp.zig");
 pub const time = @import("./time.zig");
@@ -20,7 +19,7 @@ pub const otps = hotp.otps;
 pub const otpError = hotp.otpError;
 
 pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool {
-    return validateCustom(alloc, passcode, secret, time.now().utc(), validateOpts{
+    return validateCustom(alloc, passcode, secret, time.now().utc(), .{
         .period = 30,
         .skew = 1,
         .digits = otps.Digits.Six,
@@ -30,7 +29,7 @@ pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool
 }
 
 pub fn generateCode(alloc: Allocator, secret: []const u8, t: time.Time) ![]const u8 {
-    return generateCodeCustom(alloc, secret, t, validateOpts{
+    return generateCodeCustom(alloc, secret, t, .{
         .period = 30,
         .skew = 1,
         .digits = otps.Digits.Six,
@@ -89,6 +88,7 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
         for (1..opts.skew+1) |i| {
             try counters.append(@as(u64, @intCast(counter + @as(i64, @intCast(i)))));
 
+            // fixed u64(i64) type
             const tmp = counter - @as(i64, @intCast(i));
             if (tmp >= 0) {
                 try counters.append(@as(u64, @intCast(tmp)));
@@ -169,16 +169,16 @@ pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
 
     // otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
-    var alloc: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(allocator);
-
-    var v: url.Values = url.Values.init(allocator);
+    var v = url.Values.init(allocator);
 
     var secret: []const u8 = undefined;
     if (newOpts.secret) |val| {
         secret = try base32.encode(allocator, val, false);
     } else {
-        var s: []u8 = try alloc.allocator().alloc(u8, newOpts.secretSize);
+        var s: []u8 = try allocator.alloc(u8, newOpts.secretSize);
         random.bytes(s[0..]);
+
+        defer allocator.free(s);
 
         secret = try base32.encode(allocator, s, false);
     }
@@ -427,6 +427,18 @@ test "test generate 2" {
     try testing.expectEqual(32, key.secret().len);
 
     key = try generate(alloc, generateOpts{
+        .issuer = "Snake Oil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 20,
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqual(true, bytes.contains(key.urlString(), "issuer=Snake%20Oil"));
+
+    key = try generate(alloc, generateOpts{
         .issuer = "SnakeOil",
         .accountName = "alice@example.com",
         .period = 0,
@@ -437,6 +449,18 @@ test "test generate 2" {
     });
 
     try testing.expectEqual(32, key.secret().len);
+
+    key = try generate(alloc, generateOpts{
+        .issuer = "SnakeOil",
+        .accountName = "alice@example.com",
+        .period = 0,
+        .secretSize = 13, // anything that is not divisible by 5, really
+        .secret = null,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    try testing.expectEqual(false, bytes.contains(key.secret(), "="));
 
     key = try generate(alloc, generateOpts{
         .issuer = "SnakeOil",

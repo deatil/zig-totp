@@ -120,6 +120,7 @@ test "Totp Steam Guard test" {
     const period: u32 = 30;
     const code = "VHHQY742";
 
+    // const alloc = std.testing.allocator;
     const alloc = std.heap.page_allocator;
 
     const key = try base32.decode(alloc, secret);

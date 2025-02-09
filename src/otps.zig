@@ -4,7 +4,6 @@ const ascii = std.ascii;
 const testing = std.testing;
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const url = @import("./url.zig");
 const bytes = @import("./bytes.zig");
@@ -22,7 +21,7 @@ pub const Key = struct {
     url: url.Uri,
     query: url.Values,
 
-    arena: ArenaAllocator,
+    alloc: Allocator,
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
         const u = try url.Uri.parse(orig);
@@ -40,12 +39,8 @@ pub const Key = struct {
             .orig = orig,
             .url = u,
             .query = q,
-            .arena = ArenaAllocator.init(a),
+            .alloc = a,
         };
-    }
-
-    pub fn deinit(self: *Key) void {
-        self.arena.deinit();
     }
 
     pub fn string(self: *Key) []const u8 {
@@ -53,69 +48,76 @@ pub const Key = struct {
     }
 
     pub fn typ(self: *Key) []const u8 {
-        if (self.url.host == null) {
-            return "";
+        if (self.url.host) |val| {
+            return val.percent_encoded;
         }
 
-        return self.url.host.?.percent_encoded;
+        return "";
     }
 
     pub fn issuer(self: *Key) []const u8 {
         const iss = self.query.get("issuer");
-        if (iss != null) {
-            return iss.?;
+        if (iss) |val| {
+            return val;
         }
 
         const p = bytes.trimLeft(self.url.path.percent_encoded, "/");
-        const i = bytes.index(p, ":").?;
+        const i = bytes.index(p, ":");
 
-        if (i < 0) {
-            return "";
+        if (i) |ii| {
+            return p[0..ii];
         }
 
-        return p[0..i];
+        return "";
     }
 
     pub fn accountName(self: *Key) []const u8 {
         const p = bytes.trimLeft(self.url.path.percent_encoded, "/");
-        const i = bytes.index(p, ":").?;
+        const i = bytes.index(p, ":");
 
-        if (i < 0) {
-            return p;
+        if (i) |ii| {
+            return p[ii+1..];
         }
 
-        return p[i+1..];
+        return p;
     }
 
     pub fn secret(self: *Key) []const u8 {
         const s = self.query.get("secret");
-        if (s == null) {
-            return "";
+        if (s) |val| {
+            return val;
         }
 
-        return s.?;
+        return "";
     }
 
     pub fn period(self: *Key) u32 {
         const per = self.query.get("period");
-        if (per == null) {
-            return 30;
+        if (per) |val| {
+            const vv = fmt.parseInt(u32, val, 10) catch {
+                return 30;
+            };
+            
+            return vv;
         }
 
-        return strToInt(per.?);
+        return 30;
     }
 
     pub fn digits(self: *Key) Digits {
         const dig = self.query.get("digits");
         if (dig) |v| {
-            return Digits.init(strToInt(v));
+            const vv = fmt.parseInt(u32, v, 10) catch {
+                return Digits.Six;
+            };
+            return Digits.init(vv);
         }
 
         return Digits.Six;
     }
 
     pub fn algorithm(self: *Key) Algorithm {
-        const a = self.arena.allocator();
+        const a = self.alloc;
 
         const algo = self.query.get("algorithm");
         if (algo) |val| {
@@ -138,7 +140,7 @@ pub const Key = struct {
 
     // Encoder returns the encoder used or the default ("")
     pub fn encoder(self: *Key) Encoder {
-        const a = self.arena.allocator();
+        const a = self.alloc;
 
         const enc = self.query.get("encoder");
         if (enc) |val| {
@@ -156,7 +158,7 @@ pub const Key = struct {
     }
 
     pub fn urlString(self: *Key) []const u8 {
-        const a = self.arena.allocator();
+        const a = self.alloc;
 
         var buf = std.ArrayList(u8).init(a);
         defer buf.deinit();
@@ -318,32 +320,6 @@ fn formatLen(in: u32) u32 {
     return len;
 }
 
-fn toInt(c: u8) u32 {
-    switch (c) {
-        '0' => return 0,
-        '1' => return 1,
-        '2' => return 2,
-        '3' => return 3,
-        '4' => return 4,
-        '5' => return 5,
-        '6' => return 6,
-        '7' => return 7,
-        '8' => return 8,
-        '9' => return 9,
-        else => return 0,
-    }
-}
-
-fn strToInt(in: []const u8) u32 {
-    var res: u32 = 0;
-
-    for (0..in.len) |i| {
-        res += @as(u32, toInt(in[i])) * std.math.pow(u32, 10, @as(u32, @intCast(in.len-i-1)));
-    }
-    
-    return res;
-}
-
 fn assertEqual(comptime expected_hex: [:0]const u8, input: []const u8) !void {
     var expected_bytes: [expected_hex.len / 2]u8 = undefined;
     for (&expected_bytes, 0..) |*r, i| {
@@ -351,15 +327,6 @@ fn assertEqual(comptime expected_hex: [:0]const u8, input: []const u8) !void {
     }
 
     try testing.expectEqualSlices(u8, &expected_bytes, input);
-}
-
-test "test strToInt" {
-    try testing.expectEqual(1, std.math.pow(u32, 10, 0));
-    try testing.expectEqual(100, std.math.pow(u32, 10, 2));
-
-    try testing.expectEqual(321, strToInt("321"));
-    try testing.expectEqual(32155, strToInt("32155"));
-    try testing.expectEqual(7, strToInt("7"));
 }
 
 test "test Encoder" {
@@ -411,13 +378,97 @@ test "test Key" {
     try testing.expectEqual(Encoder.default, pu.encoder());
     try testing.expectEqualStrings(urlStr, pu.urlString());
 
-    pu.deinit();
-
     const urlStr2 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&encoder=steam";
     
     var pu2 = try Key.init(alloc, urlStr2);
     try testing.expectEqual(Encoder.steam, pu2.encoder());
     try testing.expectEqual(Algorithm.sha1, pu2.algorithm());
+}
+
+test "test Key 2" {
+    const alloc = std.heap.page_allocator;
+    
+    const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
+    
+    var pu = try Key.init(alloc, urlStr);
+
+    try testing.expectEqualStrings(urlStr, pu.string());
+    try testing.expectEqualStrings("totp", pu.typ());
+    try testing.expectEqualStrings("Example", pu.issuer());
+    try testing.expectEqualStrings("alice@google.com", pu.accountName());
+    try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
+
+    // ==================
+    
+    const urlStr2 = "otpauth://totp?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
+    
+    var pu2 = try Key.init(alloc, urlStr2);
+
+    try testing.expectEqualStrings(urlStr2, pu2.string());
+    try testing.expectEqualStrings("totp", pu2.typ());
+    try testing.expectEqualStrings("", pu2.issuer());
+    try testing.expectEqualStrings("", pu2.accountName());
+    try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu2.secret());
+
+    // ==================
+    
+    const urlStr3 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
+    
+    var pu3 = try Key.init(alloc, urlStr3);
+
+    try testing.expectEqualStrings(urlStr3, pu3.string());
+    try testing.expectEqualStrings("totp", pu3.typ());
+    try testing.expectEqualStrings("", pu3.issuer());
+    try testing.expectEqualStrings("test", pu3.accountName());
+    try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu3.secret());
+
+    // ==================
+    
+    const urlStr33 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
+    
+    var pu33 = try Key.init(alloc, urlStr33);
+
+    try testing.expectEqualStrings(urlStr33, pu33.string());
+    try testing.expectEqualStrings("totp", pu33.typ());
+    try testing.expectEqualStrings("Example", pu33.issuer());
+    try testing.expectEqualStrings("test", pu33.accountName());
+    try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu33.secret());
+
+    // ==================
+    
+    const urlStr5 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=9&period=20";
+    
+    var pu5 = try Key.init(alloc, urlStr5);
+
+    try testing.expectEqualStrings(urlStr5, pu5.string());
+    try testing.expectEqualStrings("totp", pu5.typ());
+    try testing.expectEqual(Digits.init(9), pu5.digits());
+    try testing.expectEqual(20, pu5.period());
+
+    // ==================
+    
+    const urlStr6 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&period=20";
+    
+    var pu6 = try Key.init(alloc, urlStr6);
+
+    try testing.expectEqual(Digits.Six, pu6.digits());
+
+    // ==================
+    
+    const urlStr7 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=a9&period=20";
+    
+    var pu7 = try Key.init(alloc, urlStr7);
+
+    try testing.expectEqual(Digits.Six, pu7.digits());
+
+    // ==================
+    
+    const urlStr8 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=9&period=b20";
+    
+    var pu8 = try Key.init(alloc, urlStr8);
+
+    try testing.expectEqual(30, pu8.period());
+
 }
 
 test "test Algorithm" {

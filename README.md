@@ -43,7 +43,7 @@ const totp = @import("zig-totp");
 pub fn main() !void {
     const alloc = std.heap.page_allocator;
 
-    const secret = "test-data";
+    const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const n = totp.time.now().utc();
     const passcode = try totp.generateCode(alloc, secret, n);
     
