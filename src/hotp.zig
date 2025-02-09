@@ -57,7 +57,7 @@ pub fn generateCodeCustom(alloc: Allocator, secret: []const u8, counter: u64, op
         },
         else => {
             const code = try otp.hotp(alloc, key, counter, opts.digits.length(), opts.algorithm);
-            return @as([]const u8, try opts.digits.format(code));
+            return @as([]const u8, try opts.digits.format(alloc, code));
         }
     }
 }
@@ -134,7 +134,7 @@ pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
     try v.set("secret", secret);
     try v.set("issuer", newOpts.issuer);
     try v.set("algorithm", newOpts.algorithm.?.string());
-    try v.set("digits", try newOpts.digits.string());
+    try v.set("digits", try newOpts.digits.string(allocator));
 
     const rawQuery = try url.encodeQuery(v);
 

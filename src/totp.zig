@@ -190,7 +190,7 @@ pub fn generate(allocator: Allocator, opts: generateOpts) !otps.Key {
 
     try v.set("period", periodStr);
     try v.set("algorithm", newOpts.algorithm.?.string());
-    try v.set("digits", try newOpts.digits.?.string());
+    try v.set("digits", try newOpts.digits.?.string(allocator));
 
     const rawQuery = try url.encodeQuery(v);
 

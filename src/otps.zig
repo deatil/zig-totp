@@ -260,11 +260,9 @@ pub const Digits = struct {
         };
     }
 
-    pub fn string(self: Self) ![]const u8 {
-        const allocator = std.heap.page_allocator;
-
+    pub fn string(self: Self, alloc: Allocator) ![]const u8 {
         const len = self.length();
-        return try fmt.allocPrint(allocator, "{d}", .{len});
+        return try fmt.allocPrint(alloc, "{d}", .{len});
     }
 
     // Length returns the number of characters for this Digits.
@@ -273,9 +271,7 @@ pub const Digits = struct {
     }
 
     // Format converts an integer into the zero-filled size for this Digits.
-    pub fn format(self: Self, in: u32) ![]const u8 {
-        const alloc = std.heap.page_allocator;
-
+    pub fn format(self: Self, alloc: Allocator, in: u32) ![]const u8 {
         var data = std.ArrayList(u8).init(alloc);
         defer data.deinit();
 
@@ -338,13 +334,15 @@ test "test Encoder" {
 }
 
 test "test Digits" {
+    const alloc = std.heap.page_allocator;
+
     const eight = Digits.Eight;
 
-    const str = try eight.string();
+    const str = try eight.string(alloc);
     const len = eight.length();
-    const str2 = try eight.format(11222);
-    const str21 = try eight.format(11222333);
-    const str22 = try eight.format(112223333);
+    const str2 = try eight.format(alloc, 11222);
+    const str21 = try eight.format(alloc, 11222333);
+    const str22 = try eight.format(alloc, 112223333);
 
     try testing.expectEqualStrings("8", str);
     try testing.expectEqual(8, len);

@@ -51,7 +51,7 @@ pub fn main() !void {
     // generateCode: 906939
     std.debug.print("generateCode: {s} \n", .{passcode});
 
-    const valid = totp.validate(alloc, passcode, key.secret());
+    const valid = totp.validate(alloc, passcode, secret);
     
     // output: 
     // validate: true
