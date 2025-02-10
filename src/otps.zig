@@ -4,6 +4,7 @@ const ascii = std.ascii;
 const testing = std.testing;
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
+const authHmac = crypto.auth.hmac;
 
 pub const url = @import("./url.zig");
 pub const Uri = url.Uri;
@@ -19,9 +20,8 @@ pub const otpError = error{
 
 pub const Key = struct {
     orig: []const u8,
-    url: Uri,
+    url: url.Uri,
     query: url.Values,
-
     alloc: Allocator,
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
@@ -181,7 +181,9 @@ pub const Algorithm = enum {
     sha512,
     md5,
 
-    pub fn string(self: Algorithm) []const u8 {
+    const Self = @This();
+
+    pub fn string(self: Self) []const u8 {
         return switch (self) {
             .sha1 => "SHA1",
             .sha256 => "SHA256",
@@ -190,47 +192,47 @@ pub const Algorithm = enum {
         };
     }
 
-    pub fn hashType(self: Algorithm) type {
+    pub fn hashType(self: Self) type {
         return switch (self) {
-            .sha1 => crypto.auth.hmac.HmacSha1,
-            .sha256 => crypto.auth.hmac.sha2.HmacSha256,
-            .sha512 => crypto.auth.hmac.sha2.HmacSha512,
-            else => crypto.auth.hmac.HmacMd5,
+            .sha1 => authHmac.HmacSha1,
+            .sha256 => authHmac.sha2.HmacSha256,
+            .sha512 => authHmac.sha2.HmacSha512,
+            else => authHmac.HmacMd5,
         };
     }
 
-    pub fn hash(self: Algorithm, alloc: Allocator, msg: []const u8, key: []const u8) ![]u8 {
+    pub fn hash(self: Self, alloc: Allocator, msg: []const u8, key: []const u8) ![]u8 {
         var buf = std.ArrayList(u8).init(alloc);
         defer buf.deinit();
 
         switch (self) {
             .sha1 => {
-                var h = crypto.auth.hmac.HmacSha1.init(key);
-                var hmac: [crypto.auth.hmac.HmacSha1.mac_length]u8 = undefined;
+                var h = authHmac.HmacSha1.init(key);
+                var hmac: [authHmac.HmacSha1.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
             .sha256 => {
-                var h = crypto.auth.hmac.sha2.HmacSha256.init(key);
-                var hmac: [crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+                var h = authHmac.sha2.HmacSha256.init(key);
+                var hmac: [authHmac.sha2.HmacSha256.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
             .sha512 => {
-                var h = crypto.auth.hmac.sha2.HmacSha512.init(key);
-                var hmac: [crypto.auth.hmac.sha2.HmacSha512.mac_length]u8 = undefined;
+                var h = authHmac.sha2.HmacSha512.init(key);
+                var hmac: [authHmac.sha2.HmacSha512.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
             else => {
-                var h = crypto.auth.hmac.HmacMd5.init(key);
-                var hmac: [crypto.auth.hmac.HmacMd5.mac_length]u8 = undefined;
+                var h = authHmac.HmacMd5.init(key);
+                var hmac: [authHmac.HmacMd5.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
@@ -476,10 +478,10 @@ test "test Algorithm" {
     try testing.expectEqualStrings("SHA256", Algorithm.sha256.string());
     try testing.expectEqualStrings("SHA512", Algorithm.sha512.string());
 
-    try testing.expectEqual(crypto.auth.hmac.HmacMd5, Algorithm.md5.hashType());
-    try testing.expectEqual(crypto.auth.hmac.HmacSha1, Algorithm.sha1.hashType());
-    try testing.expectEqual(crypto.auth.hmac.sha2.HmacSha256, Algorithm.sha256.hashType());
-    try testing.expectEqual(crypto.auth.hmac.sha2.HmacSha512, Algorithm.sha512.hashType());
+    try testing.expectEqual(authHmac.HmacMd5, Algorithm.md5.hashType());
+    try testing.expectEqual(authHmac.HmacSha1, Algorithm.sha1.hashType());
+    try testing.expectEqual(authHmac.sha2.HmacSha256, Algorithm.sha256.hashType());
+    try testing.expectEqual(authHmac.sha2.HmacSha512, Algorithm.sha512.hashType());
 
     const msg = "test data";
     const key = "test key";
@@ -490,6 +492,13 @@ test "test Algorithm" {
     try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", try Algorithm.sha1.hash(alloc, msg, key));
     try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", try Algorithm.sha256.hash(alloc, msg, key));
     try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", try Algorithm.sha512.hash(alloc, msg, key));
+
+    var hh = Algorithm.md5.hashType().init(key);
+    var hmacs: [Algorithm.md5.hashType().mac_length]u8 = undefined;
+    hh.update(msg);
+    hh.final(hmacs[0..]);
+
+    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", hmacs[0..]);
 
 }
 

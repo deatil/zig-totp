@@ -1,6 +1,6 @@
 ## Zig-totp 
 
-A totp library for zig.
+A totp and hotp library for zig.
 
 
 ### Env
@@ -56,6 +56,36 @@ pub fn main() !void {
     // output: 
     // validate: true
     std.debug.print("validate: {} \n", .{valid});
+}
+~~~
+
+
+### Generate keyurl
+
+~~~zig
+const std = @import("std");
+const totp = @import("zig-totp");
+
+pub fn main() !void {
+    const alloc = std.heap.page_allocator;
+
+    const secret = "test-data";
+
+    var key = try totp.generate(alloc, .{
+        .issuer = "Example",
+        .accountName = "accountName",
+        .period = 30,
+        .secretSize = 0,
+        .secret = secret,
+        .digits = otps.Digits.Six,
+        .algorithm = otps.Algorithm.sha1,
+    });
+
+    const keyurl = key.urlString();
+    
+    // output: 
+    // keyurl: otpauth://totp/Example:accountName?issuer=Example&period=30&digits=6&secret=ORSXG5BNMRQXIYI&algorithm=SHA1
+    std.debug.print("keyurl: {} \n", .{keyurl});
 }
 ~~~
 

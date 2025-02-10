@@ -323,9 +323,7 @@ pub fn stringSort(comptime T: type) fn (void, T, T) bool {
 pub const Values = struct {
     data: StringHashMap([]const u8),
     allocator: Allocator,
-
-    const Self = @This();
-    
+ 
     // init
     pub fn init(allocator: Allocator) Values {
         const data = StringHashMap([]const u8).init(allocator);
@@ -624,6 +622,19 @@ test "test Values 2" {
     const got_issuer2 = uu.get("issuer2");
 
     try testing.expect(got_issuer2 == null);
+
+    // =====================
+
+    v = Values.init(alloc);
+
+    try v.add("secret", "secret_val data");
+    try v.add("issuer", "issuer_val2");
+
+    const url_str22 = try v.encode();
+    const check22 = "issuer=issuer_val2&secret=secret_val+data";
+
+    try testing.expectEqualSlices(u8, url_str22[0..], check22[0..]);
+
 }
 
 test "URI RFC example 1" {
