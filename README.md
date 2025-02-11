@@ -1,11 +1,11 @@
 ## Zig-totp 
 
-A totp and hotp library for zig.
+A totp library for zig.
 
 
 ### Env
 
- - Zig >= 0.14
+ - Zig >= 0.14.0-dev.2851+b074fb7dd
 
 
 ### Adding zig-totp as a dependency
@@ -16,15 +16,24 @@ Add the dependency to your project:
 zig fetch --save=zig-totp git+https://github.com/deatil/zig-totp#main
 ```
 
+or use local path to add dependency at `build.zig.zon` file
+
+```zig
+.{
+    .dependencies = .{
+        .@"zig-totp" = .{
+            .path = "./lib/zig-totp",
+        },
+        ...
+    }
+}
+```
+
 And the following to your `build.zig` file:
 
 ```zig
-    const zig_totp = b.dependency("zig-totp", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("zig-totp", zig_totp.module("zig-totp"));
-    exe.linkLibrary(zig_totp.artifact("zig-totp"));
+    const zig_totp_dep = b.dependency("zig-totp", .{});
+    exe.root_module.addImport("zig-totp", zig_totp_dep.module("zig-totp"));
 ```
 
 The `zig-totp` structure can be imported in your application with:
