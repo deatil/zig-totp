@@ -324,6 +324,8 @@ pub const Values = struct {
     data: StringHashMap([]const u8),
     allocator: Allocator,
  
+    const Self = @This();
+
     // init
     pub fn init(allocator: Allocator) Values {
         const data = StringHashMap([]const u8).init(allocator);
@@ -335,7 +337,7 @@ pub const Values = struct {
     }
 
     // deinit
-    pub fn deinit(self: *Values) void {
+    pub fn deinit(self: *Self) void {
         self.data.deinit();
     }
 
@@ -343,13 +345,13 @@ pub const Values = struct {
     // If there are no values associated with the key, Get returns
     // the empty string. To access multiple values, use the map
     // directly.
-    pub fn get(self: *Values, key: []const u8) ?[]const u8 {
+    pub fn get(self: *Self, key: []const u8) ?[]const u8 {
         return self.data.get(key);
     }
 
     // Set sets the key to value. It replaces any existing
     // values.
-    pub fn set(self: *Values, key: []const u8, val: []const u8) !void {
+    pub fn set(self: *Self, key: []const u8, val: []const u8) !void {
         _ = try self.data.getOrPut(key);
 
         try self.add(key, val);
@@ -357,15 +359,15 @@ pub const Values = struct {
 
     // Add adds the value to key. It appends to any existing
     // values associated with key.
-    pub fn add(self: *Values, key: []const u8, val: []const u8) !void {
+    pub fn add(self: *Self, key: []const u8, val: []const u8) !void {
         try self.data.put(key, val);
     }
 
-    pub fn del(self: *Values, key: []const u8) bool {
+    pub fn del(self: *Self, key: []const u8) bool {
         return self.data.remove(key);
     }
 
-    pub fn has(self: *Values, key: []const u8) bool {
+    pub fn has(self: *Self, key: []const u8) bool {
         if (self.data.get(key) != null) {
             return true;
         }
@@ -375,7 +377,7 @@ pub const Values = struct {
 
     /// Encode encodes the values into `URL encoded` form
     /// ("bar=baz&foo=quux") sorted by key.
-    pub fn encode(self: *Values) ![:0]u8 {
+    pub fn encode(self: *Self) ![:0]u8 {
         const alloc = self.allocator;
 
         var buf = std.ArrayList(u8).init(alloc);

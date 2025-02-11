@@ -25,12 +25,12 @@ pub fn trimRight(data: []const u8, sep: []const u8) []const u8 {
     return mem.trimRight(u8, data, sep);
 }
 
-pub const getLineData = struct {
+pub const GetLineData = struct {
     line: []const u8,
     rest: []const u8,
 };
 
-pub fn getLine(data: []const u8) getLineData {
+pub fn getLine(data: []const u8) GetLineData {
     var i = mem.indexOf(u8, data, "\n").?;
     var j: usize = 0;
 
@@ -80,13 +80,13 @@ pub fn eq(rest: []const u8, needle: []const u8) bool {
     return mem.eql(u8, rest, needle);
 }
 
-pub const cutData = struct {
+pub const CutData = struct {
     before: []const u8,
     after: []const u8,
     found: bool,
 };
 
-pub fn cut(s: []const u8, sep: []const u8) cutData {
+pub fn cut(s: []const u8, sep: []const u8) CutData {
     const i = mem.indexOf(u8, s, sep);
     if (i != null) {
         const j: usize = mem.indexOf(u8, s, sep).?;

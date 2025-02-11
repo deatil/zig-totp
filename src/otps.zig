@@ -10,7 +10,7 @@ pub const url = @import("./url.zig");
 pub const Uri = url.Uri;
 pub const bytes = url.bytes;
 
-pub const otpError = error{
+pub const OtpError = error {
     ValidateSecretInvalidBase32,
     ValidateInputInvalidLength,
 
@@ -23,6 +23,8 @@ pub const Key = struct {
     url: url.Uri,
     query: url.Values,
     alloc: Allocator,
+
+    const Self = @This();
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
         const u = try Uri.parse(orig);
@@ -44,11 +46,11 @@ pub const Key = struct {
         };
     }
 
-    pub fn string(self: *Key) []const u8 {
+    pub fn string(self: *Self) []const u8 {
         return self.orig;
     }
 
-    pub fn typ(self: *Key) []const u8 {
+    pub fn typ(self: *Self) []const u8 {
         if (self.url.host) |val| {
             return val.percent_encoded;
         }
@@ -56,7 +58,7 @@ pub const Key = struct {
         return "";
     }
 
-    pub fn issuer(self: *Key) []const u8 {
+    pub fn issuer(self: *Self) []const u8 {
         const iss = self.query.get("issuer");
         if (iss) |val| {
             return val;
@@ -72,7 +74,7 @@ pub const Key = struct {
         return "";
     }
 
-    pub fn accountName(self: *Key) []const u8 {
+    pub fn account_name(self: *Self) []const u8 {
         const p = bytes.trimLeft(self.url.path.percent_encoded, "/");
         const i = bytes.index(p, ":");
 
@@ -83,7 +85,7 @@ pub const Key = struct {
         return p;
     }
 
-    pub fn secret(self: *Key) []const u8 {
+    pub fn secret(self: *Self) []const u8 {
         const s = self.query.get("secret");
         if (s) |val| {
             return val;
@@ -92,7 +94,7 @@ pub const Key = struct {
         return "";
     }
 
-    pub fn period(self: *Key) u32 {
+    pub fn period(self: *Self) u32 {
         const per = self.query.get("period");
         if (per) |val| {
             const vv = fmt.parseInt(u32, val, 10) catch {
@@ -105,7 +107,7 @@ pub const Key = struct {
         return 30;
     }
 
-    pub fn digits(self: *Key) Digits {
+    pub fn digits(self: *Self) Digits {
         const dig = self.query.get("digits");
         if (dig) |v| {
             const vv = fmt.parseInt(u32, v, 10) catch {
@@ -117,7 +119,7 @@ pub const Key = struct {
         return Digits.Six;
     }
 
-    pub fn algorithm(self: *Key) Algorithm {
+    pub fn algorithm(self: *Self) Algorithm {
         const a = self.alloc;
 
         const algo = self.query.get("algorithm");
@@ -140,7 +142,7 @@ pub const Key = struct {
     }
 
     // Encoder returns the encoder used or the default ("")
-    pub fn encoder(self: *Key) Encoder {
+    pub fn encoder(self: *Self) Encoder {
         const a = self.alloc;
 
         const enc = self.query.get("encoder");
@@ -158,7 +160,7 @@ pub const Key = struct {
         return .default;
     }
 
-    pub fn urlString(self: *Key) []const u8 {
+    pub fn urlString(self: *Self) []const u8 {
         const a = self.alloc;
 
         var buf = std.ArrayList(u8).init(a);
@@ -371,7 +373,7 @@ test "test Key" {
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
     try testing.expectEqualStrings("Example", pu.issuer());
-    try testing.expectEqualStrings("alice@google.com", pu.accountName());
+    try testing.expectEqualStrings("alice@google.com", pu.account_name());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
     try testing.expectEqual(30, pu.period());
     try testing.expectEqual(Digits.Eight, pu.digits());
@@ -396,7 +398,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
     try testing.expectEqualStrings("Example", pu.issuer());
-    try testing.expectEqualStrings("alice@google.com", pu.accountName());
+    try testing.expectEqualStrings("alice@google.com", pu.account_name());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
 
     // ==================
@@ -408,7 +410,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr2, pu2.string());
     try testing.expectEqualStrings("totp", pu2.typ());
     try testing.expectEqualStrings("", pu2.issuer());
-    try testing.expectEqualStrings("", pu2.accountName());
+    try testing.expectEqualStrings("", pu2.account_name());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu2.secret());
 
     // ==================
@@ -420,7 +422,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr3, pu3.string());
     try testing.expectEqualStrings("totp", pu3.typ());
     try testing.expectEqualStrings("", pu3.issuer());
-    try testing.expectEqualStrings("test", pu3.accountName());
+    try testing.expectEqualStrings("test", pu3.account_name());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu3.secret());
 
     // ==================
@@ -432,7 +434,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr33, pu33.string());
     try testing.expectEqualStrings("totp", pu33.typ());
     try testing.expectEqualStrings("Example", pu33.issuer());
-    try testing.expectEqualStrings("test", pu33.accountName());
+    try testing.expectEqualStrings("test", pu33.account_name());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu33.secret());
 
     // ==================

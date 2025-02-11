@@ -1,6 +1,6 @@
 ## Zig-totp 
 
-A totp library for zig.
+A totp and hotp library for zig.
 
 
 ### Env
@@ -82,9 +82,9 @@ pub fn main() !void {
 
     var key = try totp.generate(alloc, .{
         .issuer = "Example",
-        .accountName = "accountName",
+        .account_name = "accountName",
         .period = 30,
-        .secretSize = 0,
+        .secret_size = null,
         .secret = secret,
         .digits = .Six,
         .algorithm = .sha1,
