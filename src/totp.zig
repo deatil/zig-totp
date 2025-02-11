@@ -22,9 +22,9 @@ pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool
     return validateCustom(alloc, passcode, secret, time.now().utc(), .{
         .period = 30,
         .skew = 1,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Six,
+        .algorithm = .sha1,
+        .encoder = .default,
     }) catch false;
 }
 
@@ -32,9 +32,9 @@ pub fn generateCode(alloc: Allocator, secret: []const u8, t: time.Time) ![]const
     return generateCodeCustom(alloc, secret, t, .{
         .period = 30,
         .skew = 1,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Six,
+        .algorithm = .sha1,
+        .encoder = .default,
     });
 }
 
@@ -236,8 +236,8 @@ test "test generate" {
         .period = 30,
         .secretSize = 8,
         .secret = secret,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
+        .digits = .Six,
+        .algorithm = .sha1,
     });
 
     const keyurl = key.urlString();
@@ -255,8 +255,8 @@ test "test generate no secret" {
         .period = 30,
         .secretSize = 8,
         .secret = null,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
+        .digits = .Six,
+        .algorithm = .sha1,
     });
 
     const keyurl = key.urlString();
@@ -275,23 +275,23 @@ test "test ValidateRFCMatrix" {
     const optsSha1 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha1,
+        .encoder = .default,
     };
     const optsSha256 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha256,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha256,
+        .encoder = .default,
     };
     const optsSha512 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha512,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha512,
+        .encoder = .default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();
@@ -335,23 +335,23 @@ test "test GenerateRFCMatrix" {
     const optsSha1 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha1,
+        .encoder = .default,
     };
     const optsSha256 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha256,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha256,
+        .encoder = .default,
     };
     const optsSha512 = validateOpts{
         .period = 0,
         .skew = 0,
-        .digits = otps.Digits.Eight,
-        .algorithm = otps.Algorithm.sha512,
-        .encoder = otps.Encoder.default,
+        .digits = .Eight,
+        .algorithm = .sha512,
+        .encoder = .default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();

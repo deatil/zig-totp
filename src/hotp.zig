@@ -17,17 +17,17 @@ pub const otpError = otps.otpError;
 
 pub fn validate(alloc: Allocator, passcode: []const u8, counter: u64, secret: []const u8) bool {
     return validateCustom(alloc, passcode, counter, secret, .{
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Six,
+        .algorithm = .sha1,
+        .encoder = .default,
     }) catch false;
 }
 
 pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const u8 {
     return generateCodeCustom(alloc, secret, counter, .{
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Six,
+        .algorithm = .sha1,
+        .encoder = .default,
     });
 }
 
@@ -192,8 +192,8 @@ test "test generate" {
         .accountName = "accountName",
         .secretSize = 8,
         .secret = secret,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
+        .digits = .Six,
+        .algorithm = .sha1,
     });
 
     const keyurl = key.urlString();
@@ -210,8 +210,8 @@ test "test generate no secret" {
         .accountName = "accountName",
         .secretSize = 8,
         .secret = null,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
+        .digits = .Six,
+        .algorithm = .sha1,
     });
 
     const keyurl = key.urlString();
@@ -247,9 +247,9 @@ test "test GenerateRFCMatrix" {
     
     const secret = try base32.encode(alloc, "12345678901234567890", true);
     const opts = validateOpts{
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
-        .encoder = otps.Encoder.default,
+        .digits = .Six,
+        .algorithm = .sha1,
+        .encoder = .default,
     };
 
     try testing.expectEqualStrings("755224", try generateCodeCustom(alloc, secret, 0, opts));
