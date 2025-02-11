@@ -86,8 +86,8 @@ pub fn main() !void {
         .period = 30,
         .secretSize = 0,
         .secret = secret,
-        .digits = otps.Digits.Six,
-        .algorithm = otps.Algorithm.sha1,
+        .digits = .Six,
+        .algorithm = .sha1,
     });
 
     const keyurl = key.urlString();
