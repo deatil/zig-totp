@@ -84,7 +84,8 @@ pub fn main() !void {
         .issuer = "Example",
         .account_name = "accountName",
         .period = 30,
-        .secret_size = null,
+        // .secret_size = 20,
+        // use secret if secret not empty, or use secret_size to generate secret
         .secret = secret,
         .digits = .Six,
         .algorithm = .sha1,

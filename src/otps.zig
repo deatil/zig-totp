@@ -46,6 +46,10 @@ pub const Key = struct {
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.query.deinit();
+    }
+
     pub fn string(self: *Self) []const u8 {
         return self.orig;
     }
@@ -386,6 +390,8 @@ test "test Key" {
     var pu2 = try Key.init(alloc, urlStr2);
     try testing.expectEqual(Encoder.steam, pu2.encoder());
     try testing.expectEqual(Algorithm.sha1, pu2.algorithm());
+
+    defer pu2.deinit();
 }
 
 test "test Key 2" {
