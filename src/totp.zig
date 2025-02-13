@@ -88,7 +88,7 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
         for (1..opts.skew+1) |i| {
             try counters.append(@as(u64, @intCast(counter + @as(i64, @intCast(i)))));
 
-            // fix u64(i64) type
+            // fix u64(i64)
             const tmp = counter - @as(i64, @intCast(i));
             if (tmp >= 0) {
                 try counters.append(@as(u64, @intCast(tmp)));
