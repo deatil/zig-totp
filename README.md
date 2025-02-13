@@ -32,8 +32,8 @@ or use local path to add dependency at `build.zig.zon` file
 And the following to your `build.zig` file:
 
 ```zig
-    const zig_totp_dep = b.dependency("zig-totp", .{});
-    exe.root_module.addImport("zig-totp", zig_totp_dep.module("zig-totp"));
+const zig_totp_dep = b.dependency("zig-totp", .{});
+exe.root_module.addImport("zig-totp", zig_totp_dep.module("zig-totp"));
 ```
 
 The `zig-totp` structure can be imported in your application with:
@@ -88,7 +88,7 @@ pub fn main() !void {
         // use secret if secret not empty, or use secret_size to generate secret
         .secret = secret,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const keyurl = key.urlString();

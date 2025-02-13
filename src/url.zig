@@ -10,13 +10,13 @@ pub const Uri = std.Uri;
 pub const bytes = @import("./bytes.zig");
 
 const encoding = enum {
-    path,
-    pathSegment,
-    host,
-    zone,
-    userPassword,
-    queryComponent,
-    fragment,
+    Path,
+    PathSegment,
+    Host,
+    Zone,
+    UserPassword,
+    QueryComponent,
+    Fragment,
 };
 
 pub const Error = error{
@@ -29,7 +29,7 @@ fn shouldEscape(c: u8, mode: encoding) bool {
     if ('A' <= c and c <= 'Z' or 'a' <= c and c <= 'z' or '0' <= c and c <= '9') {
         return false;
     }
-    if (mode == encoding.host or mode == encoding.zone) {
+    if (mode == encoding.Host or mode == encoding.Zone) {
         switch (c) {
             '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', ':', '[', ']', '<', '>', '"' => return false,
             else => {},
@@ -39,17 +39,17 @@ fn shouldEscape(c: u8, mode: encoding) bool {
         '-', '_', '.', '~' => return false,
         '$', '&', '+', ',', '/', ':', ';', '=', '?', '@' => {
             switch (mode) {
-                encoding.path => return c == '?',
-                encoding.pathSegment => return c == '/' or c == ';' or c == ',' or c == '?',
-                encoding.userPassword => return c == '@' or c == '/' or c == '?' or c == ':',
-                encoding.queryComponent => return true,
-                encoding.fragment => return false,
+                encoding.Path => return c == '?',
+                encoding.PathSegment => return c == '/' or c == ';' or c == ',' or c == '?',
+                encoding.UserPassword => return c == '@' or c == '/' or c == '?' or c == ':',
+                encoding.QueryComponent => return true,
+                encoding.Fragment => return false,
                 else => {},
             }
         },
         else => {},
     }
-    if (mode == encoding.fragment) {
+    if (mode == encoding.Fragment) {
         switch (c) {
             '!', '(', ')', '*' => return false,
             else => {},
@@ -100,7 +100,7 @@ fn unescape(t: []u8, ctx: UnescapeContext, s: []const u8, mode: encoding) void {
                     i = i + 3;
                 },
                 '+' => {
-                    if (mode == encoding.queryComponent) {
+                    if (mode == encoding.QueryComponent) {
                         t[j] = ' ';
                     } else {
                         t[j] = '+';
@@ -148,23 +148,23 @@ fn countUneEscape(s: []const u8, mode: encoding) !UnescapeContext {
                 if (i + 2 >= s.len or !ishex(s[i + 1]) or !ishex(s[i + 2])) {
                     return Error.EscapeError;
                 }
-                if (mode == encoding.host and unhex(s[i + 1]) < 9 and !is25(s[i .. i + 3])) {
+                if (mode == encoding.Host and unhex(s[i + 1]) < 9 and !is25(s[i .. i + 3])) {
                     return Error.EscapeError;
                 }
-                if (mode == encoding.zone) {
+                if (mode == encoding.Zone) {
                     const v = unhex(s[i + 1]) << 4 | unhex(s[i + 2]);
-                    if (!is25(s[i .. i + 3]) and v != ' ' and shouldEscape(v, encoding.host)) {
+                    if (!is25(s[i .. i + 3]) and v != ' ' and shouldEscape(v, encoding.Host)) {
                         return Error.EscapeError;
                     }
                 }
                 i = i + 3;
             },
             '+' => {
-                has_plus = mode == encoding.queryComponent;
+                has_plus = mode == encoding.QueryComponent;
                 i = i + 1;
             },
             else => {
-                if ((mode == encoding.host or mode == encoding.zone) and s[i] < 0x80 and shouldEscape(s[i], mode)) {
+                if ((mode == encoding.Host or mode == encoding.Zone) and s[i] < 0x80 and shouldEscape(s[i], mode)) {
                     return Error.InvalidHostError;
                 }
                 i = i + 1;
@@ -179,44 +179,44 @@ fn countUneEscape(s: []const u8, mode: encoding) !UnescapeContext {
 }
 
 pub fn queryEscape(a: *ArrayList, s: []const u8) !void {
-    const ctx = countEscape(s, encoding.queryComponent);
+    const ctx = countEscape(s, encoding.QueryComponent);
     try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
-    escape(buf, ctx, s, encoding.queryComponent);
+    escape(buf, ctx, s, encoding.QueryComponent);
 
     try a.resize(0);
     try a.appendSlice(buf);
 }
 
 pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
-    const ctx = try countUneEscape(s, encoding.queryComponent);
+    const ctx = try countUneEscape(s, encoding.QueryComponent);
     try a.resize(ctx.buffer_size);
 
     const buf = try a.toOwnedSlice();
-    unescape(buf, ctx, s, encoding.queryComponent);
+    unescape(buf, ctx, s, encoding.QueryComponent);
 
     try a.resize(0);
     try a.appendSlice(buf);
 }
 
 pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
-    const ctx = countEscape(s, encoding.pathSegment);
+    const ctx = countEscape(s, encoding.PathSegment);
     try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
-    escape(buf, ctx, s, encoding.pathSegment);
+    escape(buf, ctx, s, encoding.PathSegment);
 
     try a.resize(0);
     try a.appendSlice(buf);
 }
 
 pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
-    const ctx = try countUneEscape(s, encoding.pathSegment);
+    const ctx = try countUneEscape(s, encoding.PathSegment);
     try a.resize(ctx.buffer_size);
 
     const buf = try a.toOwnedSlice();
-    unescape(buf, ctx, s, encoding.pathSegment);
+    unescape(buf, ctx, s, encoding.PathSegment);
 
     try a.resize(0);
     try a.appendSlice(buf);
@@ -254,7 +254,7 @@ fn escape(t: []u8, ctx: EscapeContext, s: []const u8, mode: encoding) void {
             const alpha: []const u8 = "0123456789ABCDEF";
             while (i < s.len) {
                 const c = s[i];
-                if (c == ' ' and mode == encoding.queryComponent) {
+                if (c == ' ' and mode == encoding.QueryComponent) {
                     t[j] = '+';
                     j = j + 1;
                 } else if (shouldEscape(c, mode)) {
@@ -275,21 +275,21 @@ fn escape(t: []u8, ctx: EscapeContext, s: []const u8, mode: encoding) void {
 }
 
 fn countEscape(s: []const u8, mode: encoding) EscapeContext {
-    var spaceCount: usize = 0;
-    var hexCount: usize = 0;
+    var space_count: usize = 0;
+    var hex_count: usize = 0;
     for (s) |c| {
         if (shouldEscape(c, mode)) {
-            if (c == ' ' and mode == encoding.queryComponent) {
-                spaceCount = spaceCount + 1;
+            if (c == ' ' and mode == encoding.QueryComponent) {
+                space_count = space_count + 1;
             } else {
-                hexCount = hexCount + 1;
+                hex_count = hex_count + 1;
             }
         }
     }
 
     return EscapeContext{
-        .space_count = spaceCount,
-        .hex_count = hexCount,
+        .space_count = space_count,
+        .hex_count = hex_count,
         .length = s.len,
     };
 }
@@ -396,28 +396,28 @@ pub const Values = struct {
 
         sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-        var bufEscape = std.ArrayList(u8).init(alloc);
-        defer bufEscape.deinit();
+        var buf_escape = std.ArrayList(u8).init(alloc);
+        defer buf_escape.deinit();
 
         for (keys) |k| {
             const vs = self.data.get(k).?;
 
-            try queryEscape(&bufEscape, k);
+            try queryEscape(&buf_escape, k);
 
-            const keyEscaped = try bufEscape.toOwnedSlice();
-            try bufEscape.resize(0);
+            const key_escaped = try buf_escape.toOwnedSlice();
+            try buf_escape.resize(0);
 
             if (buf.items.len > 0) {
                 try buf.appendSlice("&");
             }
 
-            try queryEscape(&bufEscape, vs);
-            const vvEscaped = try bufEscape.toOwnedSlice();
-            try bufEscape.resize(0);
+            try queryEscape(&buf_escape, vs);
+            const vv_escaped = try buf_escape.toOwnedSlice();
+            try buf_escape.resize(0);
 
-            try buf.appendSlice(keyEscaped);
+            try buf.appendSlice(key_escaped);
             try buf.appendSlice("=");
-            try buf.appendSlice(vvEscaped);
+            try buf.appendSlice(vv_escaped);
         }
 
         return buf.toOwnedSliceSentinel(0);
@@ -439,8 +439,8 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
 
     var query_data: []const u8 = query;
 
-    var bufEscape = std.ArrayList(u8).init(m.allocator);
-    defer bufEscape.deinit();
+    var buf_escape = std.ArrayList(u8).init(m.allocator);
+    defer buf_escape.deinit();
 
     while (query_data.len > 0) {
         const cut_data = bytes.cut(query_data, "&");
@@ -457,21 +457,21 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
 
         const cut_data2 = bytes.cut(cut_data.before, "=");
 
-        queryUnescape(&bufEscape, cut_data2.before) catch {
+        queryUnescape(&buf_escape, cut_data2.before) catch {
             continue;
         };
 
-        const keyEscaped = try bufEscape.toOwnedSlice();
-        try bufEscape.resize(0);
+        const key_escaped = try buf_escape.toOwnedSlice();
+        try buf_escape.resize(0);
 
-        queryUnescape(&bufEscape, cut_data2.after) catch {
+        queryUnescape(&buf_escape, cut_data2.after) catch {
             continue;
         };
 
-        const valueEscaped = try bufEscape.toOwnedSlice();
-        try bufEscape.resize(0);
+        const valueEscaped = try buf_escape.toOwnedSlice();
+        try buf_escape.resize(0);
 
-        try m.add(keyEscaped, valueEscaped);
+        try m.add(key_escaped, valueEscaped);
     }
 
     return m;
@@ -496,28 +496,28 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
 
     sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-    var bufEscape = std.ArrayList(u8).init(alloc);
-    defer bufEscape.deinit();
+    var buf_escape = std.ArrayList(u8).init(alloc);
+    defer buf_escape.deinit();
 
     for (keys) |k| {
         const vs = v.data.get(k).?;
 
-        try pathEscape(&bufEscape, k);
+        try pathEscape(&buf_escape, k);
 
-        const keyEscaped = try bufEscape.toOwnedSlice();
-        try bufEscape.resize(0);
+        const key_escaped = try buf_escape.toOwnedSlice();
+        try buf_escape.resize(0);
 
         if (buf.items.len > 0) {
             try buf.appendSlice("&");
         }
 
-        try pathEscape(&bufEscape, vs);
-        const vvEscaped = try bufEscape.toOwnedSlice();
-        try bufEscape.resize(0);
+        try pathEscape(&buf_escape, vs);
+        const vv_escaped = try buf_escape.toOwnedSlice();
+        try buf_escape.resize(0);
 
-        try buf.appendSlice(keyEscaped);
+        try buf.appendSlice(key_escaped);
         try buf.appendSlice("=");
-        try buf.appendSlice(vvEscaped);
+        try buf.appendSlice(vv_escaped);
     }
 
     return buf.toOwnedSliceSentinel(0);

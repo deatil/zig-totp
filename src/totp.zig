@@ -23,8 +23,8 @@ pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool
         .period = 30,
         .skew = 1,
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     }) catch false;
 }
 
@@ -33,8 +33,8 @@ pub fn generateCode(alloc: Allocator, secret: []const u8, t: time.Time) ![]const
         .period = 30,
         .skew = 1,
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     });
 }
 
@@ -48,9 +48,9 @@ pub const ValidateOpts = struct {
     // Digits as part of the input. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otps.Algorithm = .sha1,
+    algorithm: otps.Algorithm = .SHA1,
     // Encoder to use for output code.
-    encoder: otps.Encoder = .default,
+    encoder: otps.Encoder = .Default,
 };
 
 // generate Code Custom
@@ -98,9 +98,9 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
         }
     }
 
-    const newCounters = try counters.toOwnedSlice();
+    const new_counters = try counters.toOwnedSlice();
 
-    for (newCounters) |newCounter| {
+    for (new_counters) |newCounter| {
         const res = try hotp.validateCustom(alloc, passcode, newCounter, secret, .{
             .digits = opts.digits,
             .algorithm = opts.algorithm,
@@ -129,7 +129,7 @@ pub const GenerateOpts = struct {
     // Digits to request. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otps.Algorithm = .sha1,
+    algorithm: otps.Algorithm = .SHA1,
 };
 
 pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
@@ -163,25 +163,25 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     try v.set("secret", secret);
     try v.set("issuer", opts.issuer);
 
-    const periodStr = try fmt.allocPrint(allocator, "{d}", .{opts.period});
-    defer allocator.free(periodStr);
+    const period_str = try fmt.allocPrint(allocator, "{d}", .{opts.period});
+    defer allocator.free(period_str);
 
-    try v.set("period", periodStr);
+    try v.set("period", period_str);
     try v.set("algorithm", opts.algorithm.string());
     try v.set("digits", try opts.digits.string(allocator));
 
-    const rawQuery = try url.encodeQuery(v);
-    defer allocator.free(rawQuery);
+    const raw_query = try url.encodeQuery(v);
+    defer allocator.free(raw_query);
 
-    var pathBuf = std.ArrayList(u8).init(allocator);
-    defer pathBuf.deinit();
+    var path_buf = std.ArrayList(u8).init(allocator);
+    defer path_buf.deinit();
 
-    try pathBuf.appendSlice("/");
-    try pathBuf.appendSlice(opts.issuer);
-    try pathBuf.appendSlice(":");
-    try pathBuf.appendSlice(opts.account_name);
+    try path_buf.appendSlice("/");
+    try path_buf.appendSlice(opts.issuer);
+    try path_buf.appendSlice(":");
+    try path_buf.appendSlice(opts.account_name);
 
-    const path = try pathBuf.toOwnedSlice();
+    const path = try path_buf.toOwnedSlice();
     defer allocator.free(path);
 
     var u = url.Uri{
@@ -191,18 +191,18 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
         .host = .{ .percent_encoded = "totp" },
         .port = null,
         .path = .{ .percent_encoded = path },
-        .query = .{ .percent_encoded = rawQuery },
+        .query = .{ .percent_encoded = raw_query },
         .fragment = null,
     };
 
-    var bufUrl = std.ArrayList(u8).init(allocator);
-    defer bufUrl.deinit();
+    var buf_url = std.ArrayList(u8).init(allocator);
+    defer buf_url.deinit();
 
-    try u.format(";@+/?#", .{}, bufUrl.writer());
+    try u.format(";@+/?#", .{}, buf_url.writer());
 
-    const urlStr = try bufUrl.toOwnedSlice();
+    const url_str = try buf_url.toOwnedSlice();
 
-    return try otps.Key.init(allocator, urlStr);
+    return try otps.Key.init(allocator, url_str);
 }
 
 test "test generate" {
@@ -217,7 +217,7 @@ test "test generate" {
         .secret_size = 8,
         .secret = secret,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const keyurl = key.urlString();
@@ -235,7 +235,7 @@ test "test generate no secret" {
         .period = 30,
         .secret_size = 8,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const keyurl = key.urlString();
@@ -247,43 +247,54 @@ test "test generate no secret" {
 test "test ValidateRFCMatrix" {
     const alloc = std.heap.page_allocator;
     
+    const secMd5 = try base32.encode(alloc, "1234567890123456", true);
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
     const secSha256 = try base32.encode(alloc, "12345678901234567890123456789012", true);
     const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
     
+    const optsMd5 = ValidateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = .Eight,
+        .algorithm = .MD5,
+        .encoder = .Default,
+    };
     const optsSha1 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
     const optsSha256 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha256,
-        .encoder = .default,
+        .algorithm = .SHA256,
+        .encoder = .Default,
     };
     const optsSha512 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha512,
-        .encoder = .default,
+        .algorithm = .SHA512,
+        .encoder = .Default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "85931907", secMd5, t, optsMd5));
     try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
     try testing.expectEqual(true, try validateCustom(alloc, "46119246", secSha256, t, optsSha256));
     try testing.expectEqual(true, try validateCustom(alloc, "90693936", secSha512, t, optsSha512));
 
     t = time.Time.fromTimestamp(1111111109).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "48407180", secMd5, t, optsMd5));
     try testing.expectEqual(true, try validateCustom(alloc, "07081804", secSha1, t, optsSha1));
     try testing.expectEqual(true, try validateCustom(alloc, "68084774", secSha256, t, optsSha256));
     try testing.expectEqual(true, try validateCustom(alloc, "25091201", secSha512, t, optsSha512));
 
     t = time.Time.fromTimestamp(1111111111).utc();
+    try testing.expectEqual(true, try validateCustom(alloc, "24643869", secMd5, t, optsMd5));
     try testing.expectEqual(true, try validateCustom(alloc, "14050471", secSha1, t, optsSha1));
     try testing.expectEqual(true, try validateCustom(alloc, "67062674", secSha256, t, optsSha256));
     try testing.expectEqual(true, try validateCustom(alloc, "99943326", secSha512, t, optsSha512));
@@ -307,43 +318,54 @@ test "test ValidateRFCMatrix" {
 test "test GenerateRFCMatrix" {
     const alloc = std.heap.page_allocator;
     
+    const secMd5 = try base32.encode(alloc, "1234567890123456", true);
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
     const secSha256 = try base32.encode(alloc, "12345678901234567890123456789012", true);
     const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
 
+    const optsMd5 = ValidateOpts{
+        .period = 0,
+        .skew = 0,
+        .digits = .Eight,
+        .algorithm = .MD5,
+        .encoder = .Default,
+    };
     const optsSha1 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
     const optsSha256 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha256,
-        .encoder = .default,
+        .algorithm = .SHA256,
+        .encoder = .Default,
     };
     const optsSha512 = ValidateOpts{
         .period = 0,
         .skew = 0,
         .digits = .Eight,
-        .algorithm = .sha512,
-        .encoder = .default,
+        .algorithm = .SHA512,
+        .encoder = .Default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();
+    try testing.expectEqualStrings("85931907", try generateCodeCustom(alloc, secMd5, t, optsMd5));
     try testing.expectEqualStrings("94287082", try generateCodeCustom(alloc, secSha1, t, optsSha1));
     try testing.expectEqualStrings("46119246", try generateCodeCustom(alloc, secSha256, t, optsSha256));
     try testing.expectEqualStrings("90693936", try generateCodeCustom(alloc, secSha512, t, optsSha512));
 
     t = time.Time.fromTimestamp(1111111109).utc();
+    try testing.expectEqualStrings("48407180", try generateCodeCustom(alloc, secMd5, t, optsMd5));
     try testing.expectEqualStrings("07081804", try generateCodeCustom(alloc, secSha1, t, optsSha1));
     try testing.expectEqualStrings("68084774", try generateCodeCustom(alloc, secSha256, t, optsSha256));
     try testing.expectEqualStrings("25091201", try generateCodeCustom(alloc, secSha512, t, optsSha512));
 
     t = time.Time.fromTimestamp(1111111111).utc();
+    try testing.expectEqualStrings("24643869", try generateCodeCustom(alloc, secMd5, t, optsMd5));
     try testing.expectEqualStrings("14050471", try generateCodeCustom(alloc, secSha1, t, optsSha1));
     try testing.expectEqualStrings("67062674", try generateCodeCustom(alloc, secSha256, t, optsSha256));
     try testing.expectEqualStrings("99943326", try generateCodeCustom(alloc, secSha512, t, optsSha512));
@@ -374,8 +396,8 @@ test "test ValidateSkew" {
         .period = 0,
         .skew = 1,
         .digits = .Eight,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
     
     var t = time.Time.fromTimestamp(29).utc();
@@ -395,11 +417,11 @@ test "test generate 2" {
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqualStrings("SnakeOil", key.issuer());
-    try testing.expectEqualStrings("alice@example.com", key.account_name());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(32, key.secret().len);
 
     key = try generate(alloc, GenerateOpts{
@@ -408,18 +430,39 @@ test "test generate 2" {
     });
 
     try testing.expectEqualStrings("SnakeOil", key.issuer());
-    try testing.expectEqualStrings("alice@example.com", key.account_name());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(30, key.period());
     try testing.expectEqual(otps.Digits.Six, key.digits());
-    try testing.expectEqual(otps.Algorithm.sha1, key.algorithm());
+    try testing.expectEqual(otps.Algorithm.SHA1, key.algorithm());
     try testing.expectEqual(32, key.secret().len);
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .SHA256,
+    });
+    try testing.expectEqual(otps.Algorithm.SHA256, key.algorithm());
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .SHA512,
+    });
+    try testing.expectEqual(otps.Algorithm.SHA512, key.algorithm());
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .MD5,
+    });
+    try testing.expectEqual(otps.Algorithm.MD5, key.algorithm());
 
     key = try generate(alloc, GenerateOpts{
         .issuer = "Snake Oil",
         .account_name = "alice@example.com",
         .secret_size = 20,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(true, bytes.contains(key.urlString(), "issuer=Snake%20Oil"));
@@ -430,7 +473,7 @@ test "test generate 2" {
         .period = 0,
         .secret_size = 20,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(32, key.secret().len);
@@ -441,7 +484,7 @@ test "test generate 2" {
         .period = 0,
         .secret_size = 13, // anything that is not divisible by 5, really
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(false, bytes.contains(key.secret(), "="));
@@ -453,7 +496,7 @@ test "test generate 2" {
         .secret_size = 0,
         .secret = "helloworld",
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const sec = try base32.decode(alloc, key.secret());
@@ -470,7 +513,7 @@ test "test generate 2" {
         .period = 0,
         .secret_size = 0,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingIssuer, err);
@@ -485,7 +528,7 @@ test "test generate 2" {
         .period = 0,
         .secret_size = 0,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingAccountName, err);
@@ -537,7 +580,7 @@ test "test SteamSecret" {
     const check = "qlt6vmy6svfx4bt4rpmisaiyol6hihca";
 
     try testing.expectFmt(check, "{s}", .{sec});
-    try testing.expectEqual(otps.Encoder.steam, key.encoder());
+    try testing.expectEqual(otps.Encoder.Steam, key.encoder());
     try testing.expectEqual(5, key.digits().length());
 
     const n = time.now().utc();
@@ -545,7 +588,7 @@ test "test SteamSecret" {
         .period = key.period(),
         .skew = 0,
         .digits = key.digits(),
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
         .encoder = key.encoder(),
     };
     const passcode = try generateCodeCustom(alloc, key.secret(), n, opts);

@@ -4,7 +4,7 @@ const ascii = std.ascii;
 const testing = std.testing;
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
-const authHmac = crypto.auth.hmac;
+const auth_hmac = crypto.auth.hmac;
 
 pub const url = @import("./url.zig");
 pub const Uri = url.Uri;
@@ -71,19 +71,19 @@ pub const Key = struct {
         const p = bytes.trimLeft(self.url.path.percent_encoded, "/");
         const i = bytes.index(p, ":");
 
-        if (i) |ii| {
-            return p[0..ii];
+        if (i) |val| {
+            return p[0..val];
         }
 
         return "";
     }
 
-    pub fn account_name(self: *Self) []const u8 {
+    pub fn accountName(self: *Self) []const u8 {
         const p = bytes.trimLeft(self.url.path.percent_encoded, "/");
         const i = bytes.index(p, ":");
 
-        if (i) |ii| {
-            return p[ii+1..];
+        if (i) |val| {
+            return p[val+1..];
         }
 
         return p;
@@ -129,20 +129,20 @@ pub const Key = struct {
         const algo = self.query.get("algorithm");
         if (algo) |val| {
             const alg = ascii.allocLowerString(a, val) catch {
-                return .sha1;
+                return .SHA1;
             };
             defer a.free(alg);
 
             if (bytes.eq(alg, "md5")) {
-                return .md5;
+                return .MD5;
             } else if (bytes.eq(alg, "sha256")) {
-                return .sha256;
+                return .SHA256;
             } else if (bytes.eq(alg, "sha512")) {
-                return .sha512;
+                return .SHA512;
             }
         }
 
-        return .sha1;
+        return .SHA1;
     }
 
     // Encoder returns the encoder used or the default ("")
@@ -152,16 +152,16 @@ pub const Key = struct {
         const enc = self.query.get("encoder");
         if (enc) |val| {
             const encoder_name = ascii.allocLowerString(a, val) catch {
-                return .default;
+                return .Default;
             };
             defer a.free(encoder_name);
 
             if (bytes.eq(encoder_name, "steam")) {
-                return .steam;
+                return .Steam;
             }
         }
 
-        return .default;
+        return .Default;
     }
 
     pub fn urlString(self: *Self) []const u8 {
@@ -174,36 +174,36 @@ pub const Key = struct {
             return "";
         };
 
-        const urlStr = buf.toOwnedSlice() catch {
+        const url_str = buf.toOwnedSlice() catch {
             return "";
         };
-        return urlStr;
+        return url_str;
     }
 };
 
 pub const Algorithm = enum {
-    sha1,
-    sha256,
-    sha512,
-    md5,
+    SHA1,
+    SHA256,
+    SHA512,
+    MD5,
 
     const Self = @This();
 
     pub fn string(self: Self) []const u8 {
         return switch (self) {
-            .sha1 => "SHA1",
-            .sha256 => "SHA256",
-            .sha512 => "SHA512",
+            .SHA1 => "SHA1",
+            .SHA256 => "SHA256",
+            .SHA512 => "SHA512",
             else => "MD5",
         };
     }
 
     pub fn hashType(self: Self) type {
         return switch (self) {
-            .sha1 => authHmac.HmacSha1,
-            .sha256 => authHmac.sha2.HmacSha256,
-            .sha512 => authHmac.sha2.HmacSha512,
-            else => authHmac.HmacMd5,
+            .SHA1 => auth_hmac.HmacSha1,
+            .SHA256 => auth_hmac.sha2.HmacSha256,
+            .SHA512 => auth_hmac.sha2.HmacSha512,
+            else => auth_hmac.HmacMd5,
         };
     }
 
@@ -212,33 +212,33 @@ pub const Algorithm = enum {
         defer buf.deinit();
 
         switch (self) {
-            .sha1 => {
-                var h = authHmac.HmacSha1.init(key);
-                var hmac: [authHmac.HmacSha1.mac_length]u8 = undefined;
+            .SHA1 => {
+                var h = auth_hmac.HmacSha1.init(key);
+                var hmac: [auth_hmac.HmacSha1.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
-            .sha256 => {
-                var h = authHmac.sha2.HmacSha256.init(key);
-                var hmac: [authHmac.sha2.HmacSha256.mac_length]u8 = undefined;
+            .SHA256 => {
+                var h = auth_hmac.sha2.HmacSha256.init(key);
+                var hmac: [auth_hmac.sha2.HmacSha256.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
-            .sha512 => {
-                var h = authHmac.sha2.HmacSha512.init(key);
-                var hmac: [authHmac.sha2.HmacSha512.mac_length]u8 = undefined;
+            .SHA512 => {
+                var h = auth_hmac.sha2.HmacSha512.init(key);
+                var hmac: [auth_hmac.sha2.HmacSha512.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
                 try buf.appendSlice(hmac[0..]);
             },
             else => {
-                var h = authHmac.HmacMd5.init(key);
-                var hmac: [authHmac.HmacMd5.mac_length]u8 = undefined;
+                var h = auth_hmac.HmacMd5.init(key);
+                var hmac: [auth_hmac.HmacMd5.mac_length]u8 = undefined;
                 h.update(msg);
                 h.final(hmac[0..]);
 
@@ -251,8 +251,8 @@ pub const Algorithm = enum {
 };
 
 pub const Encoder = enum {
-    steam,
-    default,
+    Steam,
+    Default,
 };
 
 pub const Digits = struct {
@@ -335,11 +335,11 @@ fn assertEqual(comptime expected_hex: [:0]const u8, input: []const u8) !void {
 }
 
 test "test Encoder" {
-    const steam = Encoder.steam;
-    const default = Encoder.default;
+    const steam = Encoder.Steam;
+    const default = Encoder.Default;
 
-    try testing.expectEqual(steam, Encoder.steam);
-    try testing.expectEqual(default, Encoder.default);
+    try testing.expectEqual(steam, Encoder.Steam);
+    try testing.expectEqual(default, Encoder.Default);
 }
 
 test "test Digits" {
@@ -377,21 +377,44 @@ test "test Key" {
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
     try testing.expectEqualStrings("Example", pu.issuer());
-    try testing.expectEqualStrings("alice@google.com", pu.account_name());
+    try testing.expectEqualStrings("alice@google.com", pu.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
     try testing.expectEqual(30, pu.period());
     try testing.expectEqual(Digits.Eight, pu.digits());
-    try testing.expectEqual(Algorithm.sha256, pu.algorithm());
-    try testing.expectEqual(Encoder.default, pu.encoder());
+    try testing.expectEqual(Algorithm.SHA256, pu.algorithm());
+    try testing.expectEqual(Encoder.Default, pu.encoder());
     try testing.expectEqualStrings(urlStr, pu.urlString());
 
     const urlStr2 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&encoder=steam";
     
     var pu2 = try Key.init(alloc, urlStr2);
-    try testing.expectEqual(Encoder.steam, pu2.encoder());
-    try testing.expectEqual(Algorithm.sha1, pu2.algorithm());
+    try testing.expectEqual(Encoder.Steam, pu2.encoder());
+    try testing.expectEqual(Algorithm.SHA1, pu2.algorithm());
 
     defer pu2.deinit();
+
+    // ==================
+    
+    var url_str: []const u8 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha1&digits=8";
+    var parse_url = try Key.init(alloc, url_str);
+    try testing.expectEqual(Algorithm.SHA1, parse_url.algorithm());
+    
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
+    parse_url = try Key.init(alloc, url_str);
+    try testing.expectEqual(Algorithm.SHA256, parse_url.algorithm());
+    
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha512&digits=8";
+    parse_url = try Key.init(alloc, url_str);
+    try testing.expectEqual(Algorithm.SHA512, parse_url.algorithm());
+    
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=md5&digits=8";
+    parse_url = try Key.init(alloc, url_str);
+    try testing.expectEqual(Algorithm.MD5, parse_url.algorithm());
+    
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=8";
+    parse_url = try Key.init(alloc, url_str);
+    try testing.expectEqual(Algorithm.SHA1, parse_url.algorithm());
+
 }
 
 test "test Key 2" {
@@ -404,7 +427,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
     try testing.expectEqualStrings("Example", pu.issuer());
-    try testing.expectEqualStrings("alice@google.com", pu.account_name());
+    try testing.expectEqualStrings("alice@google.com", pu.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
 
     // ==================
@@ -416,7 +439,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr2, pu2.string());
     try testing.expectEqualStrings("totp", pu2.typ());
     try testing.expectEqualStrings("", pu2.issuer());
-    try testing.expectEqualStrings("", pu2.account_name());
+    try testing.expectEqualStrings("", pu2.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu2.secret());
 
     // ==================
@@ -428,7 +451,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr3, pu3.string());
     try testing.expectEqualStrings("totp", pu3.typ());
     try testing.expectEqualStrings("", pu3.issuer());
-    try testing.expectEqualStrings("test", pu3.account_name());
+    try testing.expectEqualStrings("test", pu3.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu3.secret());
 
     // ==================
@@ -440,7 +463,7 @@ test "test Key 2" {
     try testing.expectEqualStrings(urlStr33, pu33.string());
     try testing.expectEqualStrings("totp", pu33.typ());
     try testing.expectEqualStrings("Example", pu33.issuer());
-    try testing.expectEqualStrings("test", pu33.account_name());
+    try testing.expectEqualStrings("test", pu33.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu33.secret());
 
     // ==================
@@ -481,28 +504,28 @@ test "test Key 2" {
 }
 
 test "test Algorithm" {
-    try testing.expectEqualStrings("MD5", Algorithm.md5.string());
-    try testing.expectEqualStrings("SHA1", Algorithm.sha1.string());
-    try testing.expectEqualStrings("SHA256", Algorithm.sha256.string());
-    try testing.expectEqualStrings("SHA512", Algorithm.sha512.string());
+    try testing.expectEqualStrings("MD5", Algorithm.MD5.string());
+    try testing.expectEqualStrings("SHA1", Algorithm.SHA1.string());
+    try testing.expectEqualStrings("SHA256", Algorithm.SHA256.string());
+    try testing.expectEqualStrings("SHA512", Algorithm.SHA512.string());
 
-    try testing.expectEqual(authHmac.HmacMd5, Algorithm.md5.hashType());
-    try testing.expectEqual(authHmac.HmacSha1, Algorithm.sha1.hashType());
-    try testing.expectEqual(authHmac.sha2.HmacSha256, Algorithm.sha256.hashType());
-    try testing.expectEqual(authHmac.sha2.HmacSha512, Algorithm.sha512.hashType());
+    try testing.expectEqual(auth_hmac.HmacMd5, Algorithm.MD5.hashType());
+    try testing.expectEqual(auth_hmac.HmacSha1, Algorithm.SHA1.hashType());
+    try testing.expectEqual(auth_hmac.sha2.HmacSha256, Algorithm.SHA256.hashType());
+    try testing.expectEqual(auth_hmac.sha2.HmacSha512, Algorithm.SHA512.hashType());
 
     const msg = "test data";
     const key = "test key";
 
     const alloc = std.heap.page_allocator;
 
-    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", try Algorithm.md5.hash(alloc, msg, key));
-    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", try Algorithm.sha1.hash(alloc, msg, key));
-    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", try Algorithm.sha256.hash(alloc, msg, key));
-    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", try Algorithm.sha512.hash(alloc, msg, key));
+    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", try Algorithm.MD5.hash(alloc, msg, key));
+    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", try Algorithm.SHA1.hash(alloc, msg, key));
+    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", try Algorithm.SHA256.hash(alloc, msg, key));
+    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", try Algorithm.SHA512.hash(alloc, msg, key));
 
-    var hh = Algorithm.md5.hashType().init(key);
-    var hmacs: [Algorithm.md5.hashType().mac_length]u8 = undefined;
+    var hh = Algorithm.MD5.hashType().init(key);
+    var hmacs: [Algorithm.MD5.hashType().mac_length]u8 = undefined;
     hh.update(msg);
     hh.final(hmacs[0..]);
 

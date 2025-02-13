@@ -16,6 +16,8 @@ pub fn hotp(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Al
 
     var hmac: []u8 = try alg.hash(alloc, counter_bytes[0..], key);
 
+    // "Dynamic truncation" in RFC 4226
+    // http://tools.ietf.org/html/rfc4226#section-5.4
     const offset = hmac[hmac.len - 1] & 0xf;
     const bin_code = hmac[offset .. offset + 4];
     const int_code = @as(u32, bin_code[3]) |
@@ -80,7 +82,7 @@ test "hotp test" {
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
-    const passcode = try hotp(alloc, key, counter, digits, .sha1);
+    const passcode = try hotp(alloc, key, counter, digits, .SHA1);
 
     try testing.expectEqual(code, passcode);
 }
@@ -96,7 +98,7 @@ test "Steam Guard test" {
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
-    try testing.expectEqualSlices(u8, code[0..], (try steam_guard(alloc, key, counter, digits, .sha1))[0..]);
+    try testing.expectEqualSlices(u8, code[0..], (try steam_guard(alloc, key, counter, digits, .SHA1))[0..]);
 }
 
 test "totp test" {
@@ -111,7 +113,7 @@ test "totp test" {
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
-    const passcode = try totp(alloc, key, t, digits, period, .sha1);
+    const passcode = try totp(alloc, key, t, digits, period, .SHA1);
 
     try testing.expectEqual(code, passcode);
 }
@@ -129,7 +131,7 @@ test "Totp Steam Guard test" {
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
-    const passcode = try totp_steam_guard(alloc, key, t, digits, period, .sha1);
+    const passcode = try totp_steam_guard(alloc, key, t, digits, period, .SHA1);
 
     try testing.expectEqualSlices(u8, code[0..], passcode[0..]);
 }

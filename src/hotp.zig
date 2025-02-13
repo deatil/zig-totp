@@ -18,16 +18,16 @@ pub const OtpError = otps.OtpError;
 pub fn validate(alloc: Allocator, passcode: []const u8, counter: u64, secret: []const u8) bool {
     return validateCustom(alloc, passcode, counter, secret, .{
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     }) catch false;
 }
 
 pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const u8 {
     return generateCodeCustom(alloc, secret, counter, .{
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     });
 }
 
@@ -35,9 +35,9 @@ pub const ValidateOpts = struct {
     // Digits as part of the input. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otps.Algorithm = .sha1,
+    algorithm: otps.Algorithm = .SHA1,
     // Encoder to use for output code.
-    encoder: otps.Encoder = .default,
+    encoder: otps.Encoder = .Default,
 };
 
 // generate Code Custom
@@ -51,7 +51,7 @@ pub fn generateCodeCustom(alloc: Allocator, secret: []const u8, counter: u64, op
     defer alloc.free(key);
 
     switch (opts.encoder) {
-        .steam => {
+        .Steam => {
             const code = try otp.steam_guard(alloc, key, counter, opts.digits.length(), opts.algorithm);
             return @as([]const u8, code);
         },
@@ -85,7 +85,7 @@ pub const GenerateOpts = struct {
     // Digits to request. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
-    algorithm: otps.Algorithm = .sha1,
+    algorithm: otps.Algorithm = .SHA1,
 };
 
 pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
@@ -121,18 +121,18 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     try v.set("algorithm", opts.algorithm.string());
     try v.set("digits", try opts.digits.string(allocator));
 
-    const rawQuery = try url.encodeQuery(v);
-    defer allocator.free(rawQuery);
+    const raw_query = try url.encodeQuery(v);
+    defer allocator.free(raw_query);
 
-    var pathBuf = std.ArrayList(u8).init(allocator);
-    defer pathBuf.deinit();
+    var path_buf = std.ArrayList(u8).init(allocator);
+    defer path_buf.deinit();
 
-    try pathBuf.appendSlice("/");
-    try pathBuf.appendSlice(opts.issuer);
-    try pathBuf.appendSlice(":");
-    try pathBuf.appendSlice(opts.account_name);
+    try path_buf.appendSlice("/");
+    try path_buf.appendSlice(opts.issuer);
+    try path_buf.appendSlice(":");
+    try path_buf.appendSlice(opts.account_name);
 
-    const path = try pathBuf.toOwnedSlice();
+    const path = try path_buf.toOwnedSlice();
     defer allocator.free(path);
 
     var u = url.Uri{
@@ -142,18 +142,18 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
         .host = .{ .percent_encoded = "hotp" },
         .port = null,
         .path = .{ .percent_encoded = path },
-        .query = .{ .percent_encoded = rawQuery },
+        .query = .{ .percent_encoded = raw_query },
         .fragment = null,
     };
 
-    var bufUrl = std.ArrayList(u8).init(allocator);
-    defer bufUrl.deinit();
+    var buf_url = std.ArrayList(u8).init(allocator);
+    defer buf_url.deinit();
 
-    try u.format(";@+/?#", .{}, bufUrl.writer());
+    try u.format(";@+/?#", .{}, buf_url.writer());
 
-    const urlStr = try bufUrl.toOwnedSlice();
+    const url_str = try buf_url.toOwnedSlice();
 
-    return try otps.Key.init(allocator, urlStr);
+    return try otps.Key.init(allocator, url_str);
 }
 
 test "test generateCode" {
@@ -180,7 +180,7 @@ test "test generate" {
         .secret_size = 8,
         .secret = secret,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const keyurl = key.urlString();
@@ -197,7 +197,7 @@ test "test generate no secret" {
         .account_name = "account_name",
         .secret_size = 8,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const keyurl = key.urlString();
@@ -212,8 +212,8 @@ test "test ValidateRFCMatrix" {
     const secret = try base32.encode(alloc, "12345678901234567890", true);
     const opts = ValidateOpts{
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
 
     try testing.expectEqual(true, validateCustom(alloc, "755224", 0, secret, opts));
@@ -234,8 +234,8 @@ test "test GenerateRFCMatrix" {
     const secret = try base32.encode(alloc, "12345678901234567890", true);
     const opts = ValidateOpts{
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
 
     try testing.expectEqualStrings("755224", try generateCodeCustom(alloc, secret, 0, opts));
@@ -255,8 +255,8 @@ test "test ValidatePadding" {
     
     const opts = ValidateOpts{
         .digits = .Six,
-        .algorithm = .sha1,
-        .encoder = .default,
+        .algorithm = .SHA1,
+        .encoder = .Default,
     };
 
     // TestValidatePadding
@@ -273,11 +273,11 @@ test "test generate 2" {
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqualStrings("SnakeOil", key.issuer());
-    try testing.expectEqualStrings("alice@example.com", key.account_name());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(16, key.secret().len);
 
     key = try generate(alloc, GenerateOpts{
@@ -286,17 +286,38 @@ test "test generate 2" {
     });
 
     try testing.expectEqualStrings("SnakeOil", key.issuer());
-    try testing.expectEqualStrings("alice@example.com", key.account_name());
+    try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(otps.Digits.Six, key.digits());
-    try testing.expectEqual(otps.Algorithm.sha1, key.algorithm());
+    try testing.expectEqual(otps.Algorithm.SHA1, key.algorithm());
     try testing.expectEqual(16, key.secret().len);
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .SHA256,
+    });
+    try testing.expectEqual(otps.Algorithm.SHA256, key.algorithm());
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .SHA512,
+    });
+    try testing.expectEqual(otps.Algorithm.SHA512, key.algorithm());
+
+    key = try generate(alloc, GenerateOpts{
+        .issuer = "SnakeOil",
+        .account_name = "alice@example.com",
+        .algorithm = .MD5,
+    });
+    try testing.expectEqual(otps.Algorithm.MD5, key.algorithm());
 
     key = try generate(alloc, GenerateOpts{
         .issuer = "Snake Oil",
         .account_name = "alice@example.com",
         .secret_size = 20,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(true, bytes.contains(key.urlString(), "issuer=Snake%20Oil"));
@@ -306,7 +327,7 @@ test "test generate 2" {
         .account_name = "alice@example.com",
         .secret_size = 20,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(32, key.secret().len);
@@ -317,7 +338,7 @@ test "test generate 2" {
         .secret_size = 0,
         .secret = "helloworld",
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     });
 
     const sec = try base32.decode(alloc, key.secret());
@@ -333,7 +354,7 @@ test "test generate 2" {
         .account_name = "alice@example.com",
         .secret_size = 0,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingIssuer, err);
@@ -347,7 +368,7 @@ test "test generate 2" {
         .account_name = "",
         .secret_size = 0,
         .digits = .Six,
-        .algorithm = .sha1,
+        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingAccountName, err);
