@@ -7,7 +7,7 @@ A totp and hotp library for zig.
 
 One Time Passwords (OTPs) are an mechanism to  improve security over passwords alone. When a Time-based OTP (TOTP) is stored on a user's phone, and combined with something the user knows (Password), you have an easy on-ramp to [Multi-factor authentication](http://en.wikipedia.org/wiki/Multi-factor_authentication) without adding a dependency on a SMS provider.  This Password and TOTP combination is used by many popular websites including Google, GitHub, Facebook, Salesforce and many others.
 
-The `otp` library enables you to easily add TOTPs to your own application, increasing your user's security against mass-password breaches and malware.
+The `zig-totp` library enables you to easily add TOTPs to your own application, increasing your user's security against mass-password breaches and malware.
 
 Because TOTP is standardized and widely deployed, there are many [mobile clients and software implementations](http://en.wikipedia.org/wiki/Time-based_One-time_Password_Algorithm#Client_implementations).
 
