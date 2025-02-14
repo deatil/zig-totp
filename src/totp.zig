@@ -253,32 +253,20 @@ test "test ValidateRFCMatrix" {
     const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
     
     const optsMd5 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .MD5,
-        .encoder = .Default,
     };
     const optsSha1 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA1,
-        .encoder = .Default,
     };
     const optsSha256 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA256,
-        .encoder = .Default,
     };
     const optsSha512 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA512,
-        .encoder = .Default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();
@@ -324,32 +312,20 @@ test "test GenerateRFCMatrix" {
     const secSha512 = try base32.encode(alloc, "1234567890123456789012345678901234567890123456789012345678901234", true);
 
     const optsMd5 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .MD5,
-        .encoder = .Default,
     };
     const optsSha1 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA1,
-        .encoder = .Default,
     };
     const optsSha256 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA256,
-        .encoder = .Default,
     };
     const optsSha512 = ValidateOpts{
-        .period = 0,
-        .skew = 0,
         .digits = .Eight,
         .algorithm = .SHA512,
-        .encoder = .Default,
     };
 
     var t = time.Time.fromTimestamp(59).utc();
@@ -393,11 +369,9 @@ test "test ValidateSkew" {
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
 
     const optsSha1 = ValidateOpts{
-        .period = 0,
         .skew = 1,
         .digits = .Eight,
         .algorithm = .SHA1,
-        .encoder = .Default,
     };
     
     var t = time.Time.fromTimestamp(29).utc();
@@ -416,8 +390,6 @@ test "test generate 2" {
     var key = try generate(alloc, GenerateOpts{
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
-        .digits = .Six,
-        .algorithm = .SHA1,
     });
 
     try testing.expectEqualStrings("SnakeOil", key.issuer());
@@ -461,8 +433,6 @@ test "test generate 2" {
         .issuer = "Snake Oil",
         .account_name = "alice@example.com",
         .secret_size = 20,
-        .digits = .Six,
-        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(true, bytes.contains(key.urlString(), "issuer=Snake%20Oil"));
@@ -472,8 +442,6 @@ test "test generate 2" {
         .account_name = "alice@example.com",
         .period = 0,
         .secret_size = 20,
-        .digits = .Six,
-        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(32, key.secret().len);
@@ -481,10 +449,7 @@ test "test generate 2" {
     key = try generate(alloc, GenerateOpts{
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
-        .period = 0,
         .secret_size = 13, // anything that is not divisible by 5, really
-        .digits = .Six,
-        .algorithm = .SHA1,
     });
 
     try testing.expectEqual(false, bytes.contains(key.secret(), "="));
@@ -492,11 +457,7 @@ test "test generate 2" {
     key = try generate(alloc, GenerateOpts{
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
-        .period = 0,
-        .secret_size = 0,
         .secret = "helloworld",
-        .digits = .Six,
-        .algorithm = .SHA1,
     });
 
     const sec = try base32.decode(alloc, key.secret());
@@ -510,10 +471,6 @@ test "test generate 2" {
     _ = generate(alloc, GenerateOpts{
         .issuer = "",
         .account_name = "alice@example.com",
-        .period = 0,
-        .secret_size = 0,
-        .digits = .Six,
-        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingIssuer, err);
@@ -525,10 +482,6 @@ test "test generate 2" {
     _ = generate(alloc, GenerateOpts{
         .issuer = "SnakeOil",
         .account_name = "",
-        .period = 0,
-        .secret_size = 0,
-        .digits = .Six,
-        .algorithm = .SHA1,
     }) catch |err| {
         errTrue = true;
         try testing.expectEqual(OtpError.GenerateMissingAccountName, err);
