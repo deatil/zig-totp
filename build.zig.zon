@@ -1,6 +1,6 @@
 .{
     .name = "zig-totp",
-    .description = "A totp and hotp library for zig.",
+    .description = "A TOTP and HOTP library for zig.",
     .version = "1.0.8",
     .paths = .{
         "build.zig",

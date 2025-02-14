@@ -1,6 +1,6 @@
 ## Zig-totp 
 
-A totp and hotp library for zig.
+A TOTP and HOTP library for zig.
 
 
 ### Why One Time Passwords?
