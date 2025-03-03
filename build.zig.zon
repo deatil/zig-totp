@@ -1,7 +1,9 @@
 .{
-    .name = "zig-totp",
+    .name = .zig_totp,
     .description = "A TOTP and HOTP library for zig.",
-    .version = "1.0.9",
+    .version = "1.0.10",
+    .fingerprint = 0x55ae4ae7ab2c327d,
+    .minimum_zig_version = "0.14.0-dev.3451+d8d2aa9af",
     .paths = .{
         "build.zig",
         "build.zig.zon",
