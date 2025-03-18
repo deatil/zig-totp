@@ -208,45 +208,44 @@ pub const Algorithm = enum {
     }
 
     pub fn hash(self: Self, alloc: Allocator, msg: []const u8, key: []const u8) ![]u8 {
-        var buf = std.ArrayList(u8).init(alloc);
-        defer buf.deinit();
-
         switch (self) {
             .SHA1 => {
-                var h = auth_hmac.HmacSha1.init(key);
                 var hmac: [auth_hmac.HmacSha1.mac_length]u8 = undefined;
+
+                var h = auth_hmac.HmacSha1.init(key);
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                try buf.appendSlice(hmac[0..]);
+                return alloc.dupe(u8, hmac[0..]);
             },
             .SHA256 => {
-                var h = auth_hmac.sha2.HmacSha256.init(key);
                 var hmac: [auth_hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+
+                var h = auth_hmac.sha2.HmacSha256.init(key);
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                try buf.appendSlice(hmac[0..]);
+                return alloc.dupe(u8, hmac[0..]);
             },
             .SHA512 => {
-                var h = auth_hmac.sha2.HmacSha512.init(key);
                 var hmac: [auth_hmac.sha2.HmacSha512.mac_length]u8 = undefined;
+
+                var h = auth_hmac.sha2.HmacSha512.init(key);
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                try buf.appendSlice(hmac[0..]);
+                return alloc.dupe(u8, hmac[0..]);
             },
             else => {
-                var h = auth_hmac.HmacMd5.init(key);
                 var hmac: [auth_hmac.HmacMd5.mac_length]u8 = undefined;
+
+                var h = auth_hmac.HmacMd5.init(key);
                 h.update(msg);
                 h.final(hmac[0..]);
 
-                try buf.appendSlice(hmac[0..]);
+                return alloc.dupe(u8, hmac[0..]);
             },
         }
-
-        return try buf.toOwnedSlice();
     }
 };
 
