@@ -100,8 +100,8 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
 
     const new_counters = try counters.toOwnedSlice();
 
-    for (new_counters) |newCounter| {
-        const res = try hotp.validateCustom(alloc, passcode, newCounter, secret, .{
+    for (new_counters) |new_counter| {
+        const res = try hotp.validateCustom(alloc, passcode, new_counter, secret, .{
             .digits = opts.digits,
             .algorithm = opts.algorithm,
             .encoder = opts.encoder,
