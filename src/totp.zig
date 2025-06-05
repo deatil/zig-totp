@@ -8,15 +8,15 @@ const Buffer = std.Buffer;
 const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
 
-pub const hotp = @import("./hotp.zig");
-pub const time = @import("./time.zig");
-pub const otp = hotp.otp;
-pub const otps = hotp.otps;
-pub const url = hotp.url;
-pub const Uri = hotp.Uri;
-pub const bytes = hotp.bytes;
-pub const base32 = hotp.base32;
-pub const OtpError = hotp.OtpError;
+pub const url = @import("url.zig");
+pub const otp = @import("otp.zig");
+pub const otps = @import("otps.zig");
+pub const hotp = @import("hotp.zig");
+pub const time = @import("time.zig");
+pub const bytes = @import("bytes.zig");
+pub const base32 = @import("base32.zig");
+
+pub const OtpError = otps.OtpError;
 
 pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool {
     return validateCustom(alloc, passcode, secret, time.now().utc(), .{

@@ -6,8 +6,9 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayList(u8);
 
+const bytes = @import("bytes.zig");
+
 pub const Uri = std.Uri;
-pub const bytes = @import("./bytes.zig");
 
 const encoding = enum {
     Path,

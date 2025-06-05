@@ -3,12 +3,9 @@ const mem = std.mem;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-pub const base32 = @import("./base32.zig");
-pub const otps = @import("./otps.zig");
-pub const url = otps.url;
-pub const Uri = otps.Uri;
-pub const bytes = otps.bytes;
-pub const Algorithm = otps.Algorithm;
+const base32 = @import("base32.zig");
+const otps = @import("otps.zig");
+const Algorithm = otps.Algorithm;
 
 pub fn hotp(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Algorithm) !u32 {
     var counter_bytes: [8]u8  = undefined;

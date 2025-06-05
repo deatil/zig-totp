@@ -6,9 +6,8 @@ const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 const auth_hmac = crypto.auth.hmac;
 
-pub const url = @import("./url.zig");
-pub const Uri = url.Uri;
-pub const bytes = url.bytes;
+const url = @import("url.zig");
+const bytes = @import("bytes.zig");
 
 pub const OtpError = error {
     ValidateSecretInvalidBase32,
@@ -27,7 +26,7 @@ pub const Key = struct {
     const Self = @This();
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
-        const u = try Uri.parse(orig);
+        const u = try url.Uri.parse(orig);
 
         var query: []const u8 = "";
         if (u.query) |val| {
