@@ -15,7 +15,7 @@ pub const raw_std_encoding = std_encoding.withPadding(no_padding);
 pub const raw_hex_encoding = hex_encoding.withPadding(no_padding);
 pub const crockford_encoding = Encoding.init(crockford_alphabet).withPadding(no_padding);
 
-pub const Error = error {
+pub const Error = error{
     NotEnoughSpace,
     MissingPadding,
     NotEnoughPadding,
@@ -27,7 +27,7 @@ pub const Encoding = struct {
     buf: [32]u8,
     decode_map: [256]u8,
     pad_char: ?u8 = null,
- 
+
     const Self = @This();
 
     pub fn init(encoder: []const u8) Encoding {
@@ -155,8 +155,10 @@ pub const Encoding = struct {
 
     pub fn encodeToString(self: Self, alloc: Allocator, src: []const u8) ![]const u8 {
         var output = try alloc.alloc(u8, self.encodeLen(src.len));
+        defer alloc.free(output);
+
         const result = self.encode(output[0..], src[0..]);
-        return result;
+        return alloc.dupe(u8, result);
     }
 
     pub fn encodeLen(self: Self, n: usize) usize {
@@ -166,7 +168,7 @@ pub const Encoding = struct {
 
         return (n + 4) / 5 * 8;
     }
-    
+
     pub fn decode(
         self: Self,
         dest: []u8,
@@ -289,18 +291,19 @@ pub const Encoding = struct {
 
     pub fn decodeString(self: Self, alloc: Allocator, src: []const u8) ![]const u8 {
         var output = try alloc.alloc(u8, self.decodeLen(src.len));
+        defer alloc.free(output);
+
         const result = try self.decode(output[0..], src);
-        return result;
+        return alloc.dupe(u8, result);
     }
 
     pub fn decodeLen(self: Self, n: usize) usize {
         if (self.pad_char == null) {
             return n * 5 / 8;
         }
-        
+
         return n / 8 * 5;
     }
-
 };
 
 fn dec2(dst: []u8, dsti: usize, dbuf: []u8) void {
@@ -363,7 +366,7 @@ pub fn decode(alloc: Allocator, input: []const u8) ![]const u8 {
 
     const n = input.len % 8;
     if (n != 0) {
-        for (0..8-n) |_| {
+        for (0..8 - n) |_| {
             try buf.append('=');
         }
     }
@@ -440,27 +443,29 @@ test "Decoding no padding" {
 }
 
 test "base32 encode test" {
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
-    var output = try encode(alloc, "Hello world", true);
+    const output = try encode(alloc, "Hello world", true);
+    defer alloc.free(output);
 
     try testing.expectEqualSlices(u8, "JBSWY3DPEB3W64TMMQ======", output);
 
-    output = try encode(alloc, "Hello world", false);
-    defer alloc.free(output);
+    const output2 = try encode(alloc, "Hello world", false);
+    defer alloc.free(output2);
 
-    try testing.expectEqualSlices(u8, "JBSWY3DPEB3W64TMMQ", output);
+    try testing.expectEqualSlices(u8, "JBSWY3DPEB3W64TMMQ", output2);
 }
 
 test "base32 decode test" {
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
-    var output = try decode(alloc, "JBSWY3DPEB3W64TMMQ======");
-    try testing.expectEqualSlices(u8, "Hello world", output);
-
-    output = try decode(alloc, "JBSWY3DPEB3W64TMMQ");
+    const output = try decode(alloc, "JBSWY3DPEB3W64TMMQ======");
     defer alloc.free(output);
 
     try testing.expectEqualSlices(u8, "Hello world", output);
-}
 
+    const output2 = try decode(alloc, "JBSWY3DPEB3W64TMMQ");
+    defer alloc.free(output2);
+
+    try testing.expectEqualSlices(u8, "Hello world", output2);
+}

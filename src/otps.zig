@@ -9,7 +9,7 @@ const auth_hmac = crypto.auth.hmac;
 const url = @import("url.zig");
 const bytes = @import("bytes.zig");
 
-pub const OtpError = error {
+pub const OtpError = error{
     ValidateSecretInvalidBase32,
     ValidateInputInvalidLength,
 
@@ -26,7 +26,9 @@ pub const Key = struct {
     const Self = @This();
 
     pub fn init(a: Allocator, orig: []const u8) !Key {
-        const u = try url.Uri.parse(orig);
+        const new_orig = try a.dupe(u8, orig);
+
+        const u = try url.Uri.parse(new_orig);
 
         var query: []const u8 = "";
         if (u.query) |val| {
@@ -37,8 +39,8 @@ pub const Key = struct {
 
         const q = try url.parseQuery(a, query);
 
-        return Key{
-            .orig = orig,
+        return .{
+            .orig = new_orig,
             .url = u,
             .query = q,
             .alloc = a,
@@ -47,6 +49,7 @@ pub const Key = struct {
 
     pub fn deinit(self: *Self) void {
         self.query.deinit();
+        self.alloc.free(self.orig);
     }
 
     pub fn string(self: *Self) []const u8 {
@@ -82,7 +85,7 @@ pub const Key = struct {
         const i = bytes.index(p, ":");
 
         if (i) |val| {
-            return p[val+1..];
+            return p[val + 1 ..];
         }
 
         return p;
@@ -103,7 +106,7 @@ pub const Key = struct {
             const vv = fmt.parseInt(u32, val, 10) catch {
                 return 30;
             };
-            
+
             return vv;
         }
 
@@ -144,7 +147,7 @@ pub const Key = struct {
         return .SHA1;
     }
 
-    // Encoder returns the encoder used or the default ("")
+    /// Encoder returns the encoder used or the default ("")
     pub fn encoder(self: *Self) Encoder {
         const a = self.alloc;
 
@@ -163,6 +166,7 @@ pub const Key = struct {
         return .Default;
     }
 
+    /// return url string
     pub fn urlString(self: *Self) []const u8 {
         const a = self.alloc;
 
@@ -173,9 +177,7 @@ pub const Key = struct {
             return "";
         };
 
-        const url_str = buf.toOwnedSlice() catch {
-            return "";
-        };
+        const url_str = buf.toOwnedSlice() catch "";
         return url_str;
     }
 };
@@ -262,14 +264,14 @@ pub const Digits = struct {
     pub const Eight = init(8);
 
     pub fn init(v: u32) Digits {
-        return .{ 
+        return .{
             .value = v,
         };
     }
 
     pub fn string(self: Self, alloc: Allocator) ![]const u8 {
         const len = self.length();
-        return try fmt.allocPrint(alloc, "{d}", .{len});
+        return fmt.allocPrint(alloc, "{d}", .{len});
     }
 
     // Length returns the number of characters for this Digits.
@@ -286,7 +288,7 @@ pub const Digits = struct {
         const inlen = formatLen(in);
 
         if (len >= inlen) {
-            for (0..len-inlen) |_| {
+            for (0..len - inlen) |_| {
                 try data.append('0');
             }
         }
@@ -294,12 +296,16 @@ pub const Digits = struct {
         try data.writer().print("{}", .{in});
 
         const res = try data.toOwnedSlice();
+        const new_res = try alloc.dupe(u8, res);
+
+        defer alloc.free(res);
 
         if (len < inlen) {
-            return res[inlen-len..];
+            defer alloc.free(new_res);
+            return alloc.dupe(u8, new_res[inlen - len ..]);
         }
 
-        return res;
+        return new_res;
     }
 
     pub fn equal(self: Self, in: Self) bool {
@@ -341,7 +347,7 @@ test "test Encoder" {
 }
 
 test "test Digits" {
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     const eight = Digits.Eight;
 
@@ -350,6 +356,11 @@ test "test Digits" {
     const str2 = try eight.format(alloc, 11222);
     const str21 = try eight.format(alloc, 11222333);
     const str22 = try eight.format(alloc, 112223333);
+
+    defer alloc.free(str);
+    defer alloc.free(str2);
+    defer alloc.free(str21);
+    defer alloc.free(str22);
 
     try testing.expectEqualStrings("8", str);
     try testing.expectEqual(8, len);
@@ -367,10 +378,12 @@ test "test Digits" {
 }
 
 test "test Key" {
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
+
     const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
-    
+
     var pu = try Key.init(alloc, urlStr);
+    defer pu.deinit();
 
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
@@ -381,46 +394,55 @@ test "test Key" {
     try testing.expectEqual(Digits.Eight, pu.digits());
     try testing.expectEqual(Algorithm.SHA256, pu.algorithm());
     try testing.expectEqual(Encoder.Default, pu.encoder());
-    try testing.expectEqualStrings(urlStr, pu.urlString());
+
+    const us = pu.urlString();
+    defer alloc.free(us);
+
+    try testing.expectEqualStrings(urlStr, us);
 
     const urlStr2 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&encoder=steam";
-    
+
     var pu2 = try Key.init(alloc, urlStr2);
+    defer pu2.deinit();
+
     try testing.expectEqual(Encoder.Steam, pu2.encoder());
     try testing.expectEqual(Algorithm.SHA1, pu2.algorithm());
 
-    defer pu2.deinit();
-
     // ==================
-    
+
     var url_str: []const u8 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha1&digits=8";
     var parse_url = try Key.init(alloc, url_str);
-    try testing.expectEqual(Algorithm.SHA1, parse_url.algorithm());
-    
-    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
-    parse_url = try Key.init(alloc, url_str);
-    try testing.expectEqual(Algorithm.SHA256, parse_url.algorithm());
-    
-    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha512&digits=8";
-    parse_url = try Key.init(alloc, url_str);
-    try testing.expectEqual(Algorithm.SHA512, parse_url.algorithm());
-    
-    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=md5&digits=8";
-    parse_url = try Key.init(alloc, url_str);
-    try testing.expectEqual(Algorithm.MD5, parse_url.algorithm());
-    
-    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=8";
-    parse_url = try Key.init(alloc, url_str);
+    defer parse_url.deinit();
     try testing.expectEqual(Algorithm.SHA1, parse_url.algorithm());
 
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
+    var parse_url2 = try Key.init(alloc, url_str);
+    defer parse_url2.deinit();
+    try testing.expectEqual(Algorithm.SHA256, parse_url2.algorithm());
+
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha512&digits=8";
+    var parse_url3 = try Key.init(alloc, url_str);
+    defer parse_url3.deinit();
+    try testing.expectEqual(Algorithm.SHA512, parse_url3.algorithm());
+
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=md5&digits=8";
+    var parse_url4 = try Key.init(alloc, url_str);
+    defer parse_url4.deinit();
+    try testing.expectEqual(Algorithm.MD5, parse_url4.algorithm());
+
+    url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=8";
+    var parse_url5 = try Key.init(alloc, url_str);
+    defer parse_url5.deinit();
+    try testing.expectEqual(Algorithm.SHA1, parse_url5.algorithm());
 }
 
 test "test Key 2" {
-    const alloc = std.heap.page_allocator;
-    
+    const alloc = testing.allocator;
+
     const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
-    
+
     var pu = try Key.init(alloc, urlStr);
+    defer pu.deinit();
 
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
@@ -429,10 +451,11 @@ test "test Key 2" {
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
 
     // ==================
-    
+
     const urlStr2 = "otpauth://totp?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
-    
+
     var pu2 = try Key.init(alloc, urlStr2);
+    defer pu2.deinit();
 
     try testing.expectEqualStrings(urlStr2, pu2.string());
     try testing.expectEqualStrings("totp", pu2.typ());
@@ -441,10 +464,11 @@ test "test Key 2" {
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu2.secret());
 
     // ==================
-    
+
     const urlStr3 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
-    
+
     var pu3 = try Key.init(alloc, urlStr3);
+    defer pu3.deinit();
 
     try testing.expectEqualStrings(urlStr3, pu3.string());
     try testing.expectEqualStrings("totp", pu3.typ());
@@ -453,10 +477,11 @@ test "test Key 2" {
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu3.secret());
 
     // ==================
-    
+
     const urlStr33 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
-    
+
     var pu33 = try Key.init(alloc, urlStr33);
+    defer pu33.deinit();
 
     try testing.expectEqualStrings(urlStr33, pu33.string());
     try testing.expectEqualStrings("totp", pu33.typ());
@@ -465,10 +490,11 @@ test "test Key 2" {
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu33.secret());
 
     // ==================
-    
+
     const urlStr5 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=9&period=20";
-    
+
     var pu5 = try Key.init(alloc, urlStr5);
+    defer pu5.deinit();
 
     try testing.expectEqualStrings(urlStr5, pu5.string());
     try testing.expectEqualStrings("totp", pu5.typ());
@@ -476,29 +502,31 @@ test "test Key 2" {
     try testing.expectEqual(20, pu5.period());
 
     // ==================
-    
+
     const urlStr6 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&period=20";
-    
+
     var pu6 = try Key.init(alloc, urlStr6);
+    defer pu6.deinit();
 
     try testing.expectEqual(Digits.Six, pu6.digits());
 
     // ==================
-    
+
     const urlStr7 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=a9&period=20";
-    
+
     var pu7 = try Key.init(alloc, urlStr7);
+    defer pu7.deinit();
 
     try testing.expectEqual(Digits.Six, pu7.digits());
 
     // ==================
-    
+
     const urlStr8 = "otpauth://totp/test?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=9&period=b20";
-    
+
     var pu8 = try Key.init(alloc, urlStr8);
+    defer pu8.deinit();
 
     try testing.expectEqual(30, pu8.period());
-
 }
 
 test "test Algorithm" {
@@ -515,12 +543,24 @@ test "test Algorithm" {
     const msg = "test data";
     const key = "test key";
 
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
-    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", try Algorithm.MD5.hash(alloc, msg, key));
-    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", try Algorithm.SHA1.hash(alloc, msg, key));
-    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", try Algorithm.SHA256.hash(alloc, msg, key));
-    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", try Algorithm.SHA512.hash(alloc, msg, key));
+    const hd1 = try Algorithm.MD5.hash(alloc, msg, key);
+    defer alloc.free(hd1);
+    try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", hd1);
+
+    const hd2 = try Algorithm.SHA1.hash(alloc, msg, key);
+    defer alloc.free(hd2);
+
+    try assertEqual("910cc7a8f8b718e409c9a8b0ff3af561c8e68262", hd2);
+
+    const hd3 = try Algorithm.SHA256.hash(alloc, msg, key);
+    defer alloc.free(hd3);
+    try assertEqual("4695788ca94015a246422be13bbd966ade571842efc3a39296bdb6f2377597ff", hd3);
+
+    const hd4 = try Algorithm.SHA512.hash(alloc, msg, key);
+    defer alloc.free(hd4);
+    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", hd4);
 
     var hh = Algorithm.MD5.hashType().init(key);
     var hmacs: [Algorithm.MD5.hashType().mac_length]u8 = undefined;
@@ -528,6 +568,4 @@ test "test Algorithm" {
     hh.final(hmacs[0..]);
 
     try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", hmacs[0..]);
-
 }
-

@@ -14,7 +14,7 @@ Because TOTP is standardized and widely deployed, there are many [mobile clients
 
 ### Env
 
- - Zig >= 0.14.0-dev.3451+d8d2aa9af
+ - Zig >= 0.15.0-dev.337+4e700fdf8
 
 
 ### Adding zig-totp as a dependency
@@ -48,7 +48,7 @@ exe.root_module.addImport("zig-totp", zig_totp_dep.module("zig-totp"));
 The `zig-totp` structure can be imported in your application with:
 
 ```zig
-const zig_totp = @import("zig-totp");
+const totp = @import("zig-totp");
 ```
 
 
@@ -64,7 +64,9 @@ pub fn main() !void {
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const n = totp.time.now().utc();
     const passcode = try totp.generateCode(alloc, secret, n);
-    
+
+    defer alloc.free(passcode);
+
     // output: 
     // generateCode: 906939
     std.debug.print("generateCode: {s} \n", .{passcode});
@@ -78,7 +80,7 @@ pub fn main() !void {
 ~~~
 
 
-### Generate keyurl
+### Generate Qrcode Url
 
 ~~~zig
 const std = @import("std");
@@ -99,12 +101,14 @@ pub fn main() !void {
         .digits = .Six,
         .algorithm = .SHA1,
     });
+    defer key.deinit();
 
-    const keyurl = key.urlString();
-    
+    const qrcode_url = key.urlString();
+    defer alloc.free(qrcode_url);
+
     // output: 
-    // keyurl: otpauth://totp/Example:accountName?issuer=Example&period=30&digits=6&secret=ORSXG5BNMRQXIYI&algorithm=SHA1
-    std.debug.print("keyurl: {} \n", .{keyurl});
+    // qrcode_url: otpauth://totp/Example:accountName?issuer=Example&period=30&digits=6&secret=ORSXG5BNMRQXIYI&algorithm=SHA1
+    std.debug.print("qrcode_url: {} \n", .{qrcode_url});
 }
 ~~~
 

@@ -136,7 +136,7 @@ pub fn trimSpace(s: []const u8) []const u8 {
 test "test all" {
     try testing.expectEqual(true, contains("123erttt", "er"));
     try testing.expectEqual(false, contains("123erttt", "er2"));
-    
+
     try testing.expectEqual(3, index("123erttt", "er"));
 
     try testing.expectFmt("rttt", "{s}", .{trimLeft("yerttt", "ye")});

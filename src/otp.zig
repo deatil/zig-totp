@@ -8,10 +8,11 @@ const otps = @import("otps.zig");
 const Algorithm = otps.Algorithm;
 
 pub fn hotp(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Algorithm) !u32 {
-    var counter_bytes: [8]u8  = undefined;
+    var counter_bytes: [8]u8 = undefined;
     mem.writeInt(u64, counter_bytes[0..8], counter, .big);
 
     var hmac: []u8 = try alg.hash(alloc, counter_bytes[0..], key);
+    defer alloc.free(hmac);
 
     // "Dynamic truncation" in RFC 4226
     // http://tools.ietf.org/html/rfc4226#section-5.4
@@ -29,10 +30,11 @@ pub fn hotp(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Al
 const STEAM_CHARS: *const [26:0]u8 = "23456789BCDFGHJKMNPQRTVWXY";
 
 pub fn steam_guard(alloc: Allocator, key: []const u8, counter: u64, digit: u32, alg: Algorithm) ![]u8 {
-    var counter_bytes: [8]u8  = undefined;
+    var counter_bytes: [8]u8 = undefined;
     mem.writeInt(u64, counter_bytes[0..8], counter, .big);
 
     var hmac: []u8 = try alg.hash(alloc, counter_bytes[0..], key);
+    defer alloc.free(hmac);
 
     const offset = hmac[hmac.len - 1] & 0xf;
     const hmac_bytes = hmac[offset .. offset + 4];
@@ -74,7 +76,7 @@ test "hotp test" {
     const digits: u32 = 6;
     const code: u32 = 969429;
 
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
@@ -90,12 +92,15 @@ test "Steam Guard test" {
     const digits: u32 = 6;
     const code = "MD224T";
 
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
-    try testing.expectEqualSlices(u8, code[0..], (try steam_guard(alloc, key, counter, digits, .SHA1))[0..]);
+    const key2 = try steam_guard(alloc, key, counter, digits, .SHA1);
+    defer alloc.free(key2);
+
+    try testing.expectEqualSlices(u8, code[0..], key2[0..]);
 }
 
 test "totp test" {
@@ -105,7 +110,7 @@ test "totp test" {
     const period: u32 = 30;
     const code: u32 = 89005924;
 
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
@@ -122,13 +127,13 @@ test "Totp Steam Guard test" {
     const period: u32 = 30;
     const code = "VHHQY742";
 
-    // const alloc = std.testing.allocator;
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     const key = try base32.decode(alloc, secret);
     defer alloc.free(key);
 
     const passcode = try totp_steam_guard(alloc, key, t, digits, period, .SHA1);
+    defer alloc.free(passcode);
 
     try testing.expectEqualSlices(u8, code[0..], passcode[0..]);
 }

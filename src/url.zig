@@ -184,6 +184,8 @@ pub fn queryEscape(a: *ArrayList, s: []const u8) !void {
     try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
+    defer a.allocator.free(buf);
+
     escape(buf, ctx, s, encoding.QueryComponent);
 
     try a.resize(0);
@@ -195,6 +197,8 @@ pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
     try a.resize(ctx.buffer_size);
 
     const buf = try a.toOwnedSlice();
+    defer a.allocator.free(buf);
+
     unescape(buf, ctx, s, encoding.QueryComponent);
 
     try a.resize(0);
@@ -206,6 +210,8 @@ pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
     try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
+    defer a.allocator.free(buf);
+
     escape(buf, ctx, s, encoding.PathSegment);
 
     try a.resize(0);
@@ -217,6 +223,8 @@ pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
     try a.resize(ctx.buffer_size);
 
     const buf = try a.toOwnedSlice();
+    defer a.allocator.free(buf);
+
     unescape(buf, ctx, s, encoding.PathSegment);
 
     try a.resize(0);
@@ -324,20 +332,16 @@ pub fn stringSort(comptime T: type) fn (void, T, T) bool {
 pub const Values = struct {
     data: StringHashMap([]const u8),
     allocator: Allocator,
- 
+
     const Self = @This();
 
-    // init
     pub fn init(allocator: Allocator) Values {
-        const data = StringHashMap([]const u8).init(allocator);
-
         return .{
-            .data = data,
+            .data = StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
 
-    // deinit
     pub fn deinit(self: *Self) void {
         self.data.deinit();
     }
@@ -348,6 +352,18 @@ pub const Values = struct {
     // directly.
     pub fn get(self: *Self, key: []const u8) ?[]const u8 {
         return self.data.get(key);
+    }
+
+    pub fn getOrig(self: *Self, key: []const u8) ?[]const u8 {
+        if (self.data.get(key)) |val| {
+            const res = unescapeQuery(self.allocator, val) catch {
+                return null;
+            };
+
+            return res;
+        }
+
+        return null;
     }
 
     // Set sets the key to value. It replaces any existing
@@ -389,7 +405,10 @@ pub const Values = struct {
 
         defer alloc.free(keys);
 
-        var data = (try self.data.clone()).iterator();
+        var data_clone = try self.data.clone();
+        defer data_clone.deinit();
+
+        var data = data_clone.iterator();
         while (data.next()) |kv| {
             keys[key_i] = kv.key_ptr.*;
             key_i += 1;
@@ -406,6 +425,7 @@ pub const Values = struct {
             try queryEscape(&buf_escape, k);
 
             const key_escaped = try buf_escape.toOwnedSlice();
+            defer alloc.free(key_escaped);
             try buf_escape.resize(0);
 
             if (buf.items.len > 0) {
@@ -414,6 +434,7 @@ pub const Values = struct {
 
             try queryEscape(&buf_escape, vs);
             const vv_escaped = try buf_escape.toOwnedSlice();
+            defer alloc.free(vv_escaped);
             try buf_escape.resize(0);
 
             try buf.appendSlice(key_escaped);
@@ -436,11 +457,11 @@ pub const Values = struct {
 // value.
 // Settings containing a non-URL-encoded semicolon are considered invalid.
 pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
-    var m = Values.init(allocator);
+    var v = Values.init(allocator);
 
     var query_data: []const u8 = query;
 
-    var buf_escape = std.ArrayList(u8).init(m.allocator);
+    var buf_escape = std.ArrayList(u8).init(allocator);
     defer buf_escape.deinit();
 
     while (query_data.len > 0) {
@@ -458,24 +479,10 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
 
         const cut_data2 = bytes.cut(cut_data.before, "=");
 
-        queryUnescape(&buf_escape, cut_data2.before) catch {
-            continue;
-        };
-
-        const key_escaped = try buf_escape.toOwnedSlice();
-        try buf_escape.resize(0);
-
-        queryUnescape(&buf_escape, cut_data2.after) catch {
-            continue;
-        };
-
-        const valueEscaped = try buf_escape.toOwnedSlice();
-        try buf_escape.resize(0);
-
-        try m.add(key_escaped, valueEscaped);
+        try v.add(cut_data2.before, cut_data2.after);
     }
 
-    return m;
+    return v;
 }
 
 pub fn encodeQuery(v: Values) ![:0]u8 {
@@ -489,7 +496,10 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
 
     defer alloc.free(keys);
 
-    var data = (try v.data.clone()).iterator();
+    var data_clone = try v.data.clone();
+    defer data_clone.deinit();
+
+    var data = data_clone.iterator();
     while (data.next()) |kv| {
         keys[key_i] = kv.key_ptr.*;
         key_i += 1;
@@ -506,6 +516,7 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
         try pathEscape(&buf_escape, k);
 
         const key_escaped = try buf_escape.toOwnedSlice();
+        defer alloc.free(key_escaped);
         try buf_escape.resize(0);
 
         if (buf.items.len > 0) {
@@ -514,6 +525,7 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
 
         try pathEscape(&buf_escape, vs);
         const vv_escaped = try buf_escape.toOwnedSlice();
+        defer alloc.free(vv_escaped);
         try buf_escape.resize(0);
 
         try buf.appendSlice(key_escaped);
@@ -524,35 +536,136 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
     return buf.toOwnedSliceSentinel(0);
 }
 
+pub fn unescapeQuery(alloc: Allocator, query: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+
+    try queryUnescape(&buf, query);
+    const res = try buf.toOwnedSlice();
+
+    return res;
+}
+
 const testing = std.testing;
 
 test "test Values" {
-    const alloc = std.heap.page_allocator;
+    const alloc = testing.allocator;
 
     var v = Values.init(alloc);
+    defer v.deinit();
 
     try v.set("secret", "secret_val");
     try v.set("issuer", "issuer_val");
 
     const url_str = try v.encode();
+    defer alloc.free(url_str);
     const check = "issuer=issuer_val&secret=secret_val";
 
     try testing.expectEqualSlices(u8, url_str[0..], check[0..]);
 
     try testing.expectEqual(v.has("issuer"), true);
     try testing.expectEqual(v.has("issuer2"), false);
-    
+
     try v.set("issuer2", "issuer_val2");
 
     try testing.expectEqual(v.has("issuer2"), true);
-    
+
+    _ = v.del("issuer2");
+
+    try testing.expectEqual(v.has("issuer2"), false);
+}
+
+test "test Values 2" {
+    const alloc = testing.allocator;
+
+    var v = Values.init(alloc);
+    defer v.deinit();
+
+    try v.set("secret", "secret_val data");
+    try v.set("issuer", "issuer_val");
+
+    const url_str = try v.encode();
+    defer alloc.free(url_str);
+    const check = "issuer=issuer_val&secret=secret_val+data";
+
+    try testing.expectEqualSlices(u8, url_str[0..], check[0..]);
+
+    try testing.expectEqual(v.has("issuer"), true);
+    try testing.expectEqual(v.has("issuer2"), false);
+
+    try v.set("issuer2", "issuer_val2");
+
+    try testing.expectEqual(v.has("issuer2"), true);
+
     _ = v.del("issuer2");
 
     try testing.expectEqual(v.has("issuer2"), false);
 
     // =======================
 
+    const url_str2 = try encodeQuery(v);
+    defer alloc.free(url_str2);
+    const check2 = "issuer=issuer_val&secret=secret_val%20data";
+
+    try testing.expectEqualSlices(u8, url_str2[0..], check2[0..]);
+
+    // =======================
+
     var uu = try parseQuery(alloc, check);
+    defer uu.deinit();
+
+    try testing.expectEqual(uu.has("secret"), true);
+    try testing.expectEqual(uu.has("issuer"), true);
+    try testing.expectEqual(uu.has("issuer2"), false);
+
+    const got_secret = uu.get("secret").?;
+    const check_secret = "secret_val+data";
+
+    try testing.expectEqualSlices(u8, got_secret[0..], check_secret[0..]);
+
+    const check_secret2 = "secret_val data";
+    const got_secret2 = try unescapeQuery(testing.allocator, check_secret);
+    defer alloc.free(got_secret2);
+
+    try testing.expectEqualSlices(u8, got_secret2[0..], check_secret2[0..]);
+
+    const got_secret3 = uu.getOrig("secret").?;
+    const check_secret3 = "secret_val data";
+    defer alloc.free(got_secret3);
+
+    try testing.expectEqualSlices(u8, got_secret3[0..], check_secret3[0..]);
+
+    const got_issuer = uu.get("issuer").?;
+    const check_issuer = "issuer_val";
+
+    try testing.expectEqualSlices(u8, got_issuer[0..], check_issuer[0..]);
+
+    const got_issuer2 = uu.get("issuer2");
+
+    try testing.expect(got_issuer2 == null);
+
+    // =====================
+
+    var v2 = Values.init(alloc);
+    defer v2.deinit();
+
+    try v2.add("secret", "secret_val data");
+    try v2.add("issuer", "issuer_val2");
+
+    const url_str22 = try v2.encode();
+    defer alloc.free(url_str22);
+    const check22 = "issuer=issuer_val2&secret=secret_val+data";
+
+    try testing.expectEqualSlices(u8, url_str22[0..], check22[0..]);
+}
+
+test "test parseQuery" {
+    const alloc = testing.allocator;
+
+    const check = "issuer=issuer_val&secret=secret_val";
+
+    var uu = try parseQuery(alloc, check);
+    defer uu.deinit();
 
     try testing.expectEqual(uu.has("secret"), true);
     try testing.expectEqual(uu.has("issuer"), true);
@@ -571,73 +684,6 @@ test "test Values" {
     const got_issuer2 = uu.get("issuer2");
 
     try testing.expect(got_issuer2 == null);
-}
-
-test "test Values 2" {
-    const alloc = std.heap.page_allocator;
-
-    var v = Values.init(alloc);
-
-    try v.set("secret", "secret_val data");
-    try v.set("issuer", "issuer_val");
-
-    const url_str = try v.encode();
-    const check = "issuer=issuer_val&secret=secret_val+data";
-
-    try testing.expectEqualSlices(u8, url_str[0..], check[0..]);
-
-    try testing.expectEqual(v.has("issuer"), true);
-    try testing.expectEqual(v.has("issuer2"), false);
-    
-    try v.set("issuer2", "issuer_val2");
-
-    try testing.expectEqual(v.has("issuer2"), true);
-    
-    _ = v.del("issuer2");
-
-    try testing.expectEqual(v.has("issuer2"), false);
-
-    // =======================
-
-    const url_str2 = try encodeQuery(v);
-    const check2 = "issuer=issuer_val&secret=secret_val%20data";
-
-    try testing.expectEqualSlices(u8, url_str2[0..], check2[0..]);
-
-    // =======================
-
-    var uu = try parseQuery(alloc, check);
-
-    try testing.expectEqual(uu.has("secret"), true);
-    try testing.expectEqual(uu.has("issuer"), true);
-    try testing.expectEqual(uu.has("issuer2"), false);
-
-    const got_secret = uu.get("secret").?;
-    const check_secret = "secret_val data";
-
-    try testing.expectEqualSlices(u8, got_secret[0..], check_secret[0..]);
-
-    const got_issuer = uu.get("issuer").?;
-    const check_issuer = "issuer_val";
-
-    try testing.expectEqualSlices(u8, got_issuer[0..], check_issuer[0..]);
-
-    const got_issuer2 = uu.get("issuer2");
-
-    try testing.expect(got_issuer2 == null);
-
-    // =====================
-
-    v = Values.init(alloc);
-
-    try v.add("secret", "secret_val data");
-    try v.add("issuer", "issuer_val2");
-
-    const url_str22 = try v.encode();
-    const check22 = "issuer=issuer_val2&secret=secret_val+data";
-
-    try testing.expectEqualSlices(u8, url_str22[0..], check22[0..]);
-
 }
 
 test "URI RFC example 1" {
