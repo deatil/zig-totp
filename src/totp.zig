@@ -421,7 +421,10 @@ test "test generate 2" {
     });
     defer key.deinit();
 
-    try testing.expectEqualStrings("SnakeOil", key.issuer());
+    const issuer = key.issuer();
+    defer alloc.free(issuer);
+
+    try testing.expectEqualStrings("SnakeOil", issuer);
     try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(32, key.secret().len);
 
@@ -431,7 +434,10 @@ test "test generate 2" {
     });
     defer key2.deinit();
 
-    try testing.expectEqualStrings("SnakeOil", key2.issuer());
+    const issuer2 = key2.issuer();
+    defer alloc.free(issuer2);
+
+    try testing.expectEqualStrings("SnakeOil", issuer2);
     try testing.expectEqualStrings("alice@example.com", key2.accountName());
     try testing.expectEqual(30, key2.period());
     try testing.expectEqual(otps.Digits.Six, key2.digits());
@@ -554,7 +560,11 @@ test "test GoogleLowerCaseSecret" {
     const check = "qlt6vmy6svfx4bt4rpmisaiyol6hihca";
 
     try testing.expectFmt(check, "{s}", .{sec});
-    try testing.expectEqualStrings("Google", key.issuer());
+
+    const issuer = key.issuer();
+    defer alloc.free(issuer);
+
+    try testing.expectEqualStrings("Google", issuer);
 
     const n = time.now().utc();
     const passcode = try generateCode(alloc, key.secret(), n);
@@ -579,13 +589,18 @@ test "test SteamSecret" {
     try testing.expectFmt(check, "{s}", .{sec});
     try testing.expectEqual(otps.Encoder.Steam, key.encoder());
     try testing.expectEqual(5, key.digits().length());
-    try testing.expectEqualStrings("username%20steam", key.issuer());
+
+    const issuer = key.issuer();
+    defer alloc.free(issuer);
+
+    try testing.expectEqualStrings("username steam", issuer);
     try testing.expectEqualStrings("username", key.accountName());
+    try testing.expectEqualStrings("/username%20steam:username", key.url.path.percent_encoded);
 
-    const issuer2 = try url.unescapeQuery(alloc, key.issuer());
-    defer alloc.free(issuer2);
+    const path_buf = try key.url.path.toRawMaybeAlloc(alloc);
+    defer alloc.free(path_buf);
 
-    try testing.expectEqualStrings("username steam", issuer2);
+    try testing.expectEqualStrings("/username steam:username", path_buf);
 
     const n = time.now().utc();
     const opts = ValidateOpts{

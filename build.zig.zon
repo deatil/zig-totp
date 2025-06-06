@@ -1,7 +1,7 @@
 .{
     .name = .zig_totp,
     .description = "A TOTP and HOTP library for zig.",
-    .version = "1.2.1",
+    .version = "1.2.2",
     .fingerprint = 0x55ae4ae7ab2c327d,
     .minimum_zig_version = "0.15.0-dev.337+4e700fdf8",
     .paths = .{

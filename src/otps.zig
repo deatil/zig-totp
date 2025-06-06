@@ -64,8 +64,9 @@ pub const Key = struct {
         return "";
     }
 
+    /// need call `alloc.free(res)`
     pub fn issuer(self: *Self) []const u8 {
-        const iss = self.query.get("issuer");
+        const iss = self.query.getOrig("issuer");
         if (iss) |val| {
             return val;
         }
@@ -74,7 +75,9 @@ pub const Key = struct {
         const i = bytes.index(p, ":");
 
         if (i) |val| {
-            return p[0..val];
+            return self.alloc.dupe(u8, p[0..val]) catch {
+                return "";
+            };
         }
 
         return "";
@@ -387,7 +390,12 @@ test "test Key" {
 
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
-    try testing.expectEqualStrings("Example", pu.issuer());
+
+    const issuer = pu.issuer();
+    defer alloc.free(issuer);
+
+    try testing.expectEqualStrings("Example", issuer);
+
     try testing.expectEqualStrings("alice@google.com", pu.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
     try testing.expectEqual(30, pu.period());
@@ -446,7 +454,12 @@ test "test Key 2" {
 
     try testing.expectEqualStrings(urlStr, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
-    try testing.expectEqualStrings("Example", pu.issuer());
+
+    const issuer = pu.issuer();
+    defer alloc.free(issuer);
+
+    try testing.expectEqualStrings("Example", issuer);
+
     try testing.expectEqualStrings("alice@google.com", pu.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu.secret());
 
@@ -485,7 +498,12 @@ test "test Key 2" {
 
     try testing.expectEqualStrings(urlStr33, pu33.string());
     try testing.expectEqualStrings("totp", pu33.typ());
-    try testing.expectEqualStrings("Example", pu33.issuer());
+
+    const issuer33 = pu33.issuer();
+    defer alloc.free(issuer33);
+
+    try testing.expectEqualStrings("Example", issuer33);
+
     try testing.expectEqualStrings("test", pu33.accountName());
     try testing.expectEqualStrings("JBSWY3DPEHPK3PXP", pu33.secret());
 
