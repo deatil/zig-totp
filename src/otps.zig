@@ -21,6 +21,7 @@ pub const Key = struct {
     orig: []const u8,
     url: url.Uri,
     query: url.Values,
+    query_raw: []const u8,
     alloc: Allocator,
 
     const Self = @This();
@@ -32,7 +33,7 @@ pub const Key = struct {
 
         var query: []const u8 = "";
         if (u.query) |val| {
-            query = val.percent_encoded;
+            query = try std.fmt.allocPrint(a, "{raw}", .{val});
         } else {
             query = "";
         }
@@ -43,6 +44,7 @@ pub const Key = struct {
             .orig = new_orig,
             .url = u,
             .query = q,
+            .query_raw = query,
             .alloc = a,
         };
     }
@@ -50,6 +52,7 @@ pub const Key = struct {
     pub fn deinit(self: *Self) void {
         self.query.deinit();
         self.alloc.free(self.orig);
+        self.alloc.free(self.query_raw);
     }
 
     pub fn string(self: *Self) []const u8 {
@@ -64,9 +67,8 @@ pub const Key = struct {
         return "";
     }
 
-    /// need call `alloc.free(res)`
     pub fn issuer(self: *Self) []const u8 {
-        const iss = self.query.getOrig("issuer");
+        const iss = self.query.get("issuer");
         if (iss) |val| {
             return val;
         }
@@ -75,9 +77,7 @@ pub const Key = struct {
         const i = bytes.index(p, ":");
 
         if (i) |val| {
-            return self.alloc.dupe(u8, p[0..val]) catch {
-                return "";
-            };
+            return p[0..val];
         }
 
         return "";
@@ -392,8 +392,6 @@ test "test Key" {
     try testing.expectEqualStrings("totp", pu.typ());
 
     const issuer = pu.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("Example", issuer);
 
     try testing.expectEqualStrings("alice@google.com", pu.accountName());
@@ -456,8 +454,6 @@ test "test Key 2" {
     try testing.expectEqualStrings("totp", pu.typ());
 
     const issuer = pu.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("Example", issuer);
 
     try testing.expectEqualStrings("alice@google.com", pu.accountName());
@@ -500,8 +496,6 @@ test "test Key 2" {
     try testing.expectEqualStrings("totp", pu33.typ());
 
     const issuer33 = pu33.issuer();
-    defer alloc.free(issuer33);
-
     try testing.expectEqualStrings("Example", issuer33);
 
     try testing.expectEqualStrings("test", pu33.accountName());

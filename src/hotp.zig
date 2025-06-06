@@ -357,8 +357,6 @@ test "test generate 2" {
     defer key.deinit();
 
     const issuer = key.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("SnakeOil", issuer);
     try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(16, key.secret().len);
@@ -370,8 +368,6 @@ test "test generate 2" {
     defer key2.deinit();
 
     const issuer2 = key2.issuer();
-    defer alloc.free(issuer2);
-
     try testing.expectEqualStrings("SnakeOil", issuer2);
     try testing.expectEqualStrings("alice@example.com", key2.accountName());
     try testing.expectEqual(otps.Digits.Six, key2.digits());

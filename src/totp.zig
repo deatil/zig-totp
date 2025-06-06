@@ -422,8 +422,6 @@ test "test generate 2" {
     defer key.deinit();
 
     const issuer = key.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("SnakeOil", issuer);
     try testing.expectEqualStrings("alice@example.com", key.accountName());
     try testing.expectEqual(32, key.secret().len);
@@ -435,8 +433,6 @@ test "test generate 2" {
     defer key2.deinit();
 
     const issuer2 = key2.issuer();
-    defer alloc.free(issuer2);
-
     try testing.expectEqualStrings("SnakeOil", issuer2);
     try testing.expectEqualStrings("alice@example.com", key2.accountName());
     try testing.expectEqual(30, key2.period());
@@ -562,8 +558,6 @@ test "test GoogleLowerCaseSecret" {
     try testing.expectFmt(check, "{s}", .{sec});
 
     const issuer = key.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("Google", issuer);
 
     const n = time.now().utc();
@@ -591,8 +585,6 @@ test "test SteamSecret" {
     try testing.expectEqual(5, key.digits().length());
 
     const issuer = key.issuer();
-    defer alloc.free(issuer);
-
     try testing.expectEqualStrings("username steam", issuer);
     try testing.expectEqualStrings("username", key.accountName());
     try testing.expectEqualStrings("/username%20steam:username", key.url.path.percent_encoded);
@@ -601,6 +593,11 @@ test "test SteamSecret" {
     defer alloc.free(path_buf);
 
     try testing.expectEqualStrings("/username steam:username", path_buf);
+
+    const query_buf = try key.url.query.?.toRawMaybeAlloc(alloc);
+    defer alloc.free(query_buf);
+
+    try testing.expectEqualStrings("secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username steam&encoder=steam", query_buf);
 
     const n = time.now().utc();
     const opts = ValidateOpts{

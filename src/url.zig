@@ -368,19 +368,6 @@ pub const Values = struct {
         return self.data.get(key);
     }
 
-    /// get query unescape data
-    pub fn getOrig(self: *Self, key: []const u8) ?[]const u8 {
-        if (self.data.get(key)) |val| {
-            const res = unescapeQuery(self.allocator, val) catch {
-                return null;
-            };
-
-            return res;
-        }
-
-        return null;
-    }
-
     /// Set sets the key to value. It replaces any existing
     /// values.
     pub fn set(self: *Self, key: []const u8, val: []const u8) !void {
@@ -631,17 +618,12 @@ test "test Values 2" {
 
     try testing.expectEqualSlices(u8, got_secret[0..], check_secret[0..]);
 
+    const old_secret2 = "secret_val+data";
     const check_secret2 = "secret_val data";
-    const got_secret2 = try unescapeQuery(testing.allocator, check_secret);
+    const got_secret2 = try unescapeQuery(testing.allocator, old_secret2);
     defer alloc.free(got_secret2);
 
     try testing.expectEqualSlices(u8, got_secret2[0..], check_secret2[0..]);
-
-    const got_secret3 = uu.getOrig("secret").?;
-    const check_secret3 = "secret_val data";
-    defer alloc.free(got_secret3);
-
-    try testing.expectEqualSlices(u8, got_secret3[0..], check_secret3[0..]);
 
     const got_issuer = uu.get("issuer").?;
     const check_issuer = "issuer_val";
