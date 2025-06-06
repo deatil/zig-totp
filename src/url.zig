@@ -1,10 +1,10 @@
 const std = @import("std");
 const mem = std.mem;
 const sort = std.sort;
-const StringHashMap = std.hash_map.StringHashMap;
 const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayList(u8);
+const StringMap = std.hash_map.StringHashMap([]const u8);
 
 const bytes = @import("bytes.zig");
 
@@ -172,7 +172,8 @@ fn countUneEscape(s: []const u8, mode: encoding) !UnescapeContext {
             },
         }
     }
-    return UnescapeContext{
+
+    return .{
         .buffer_size = s.len - 2 * n,
         .has_plus = has_plus,
         .length = s.len,
@@ -205,6 +206,14 @@ pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
     try a.appendSlice(buf);
 }
 
+pub fn queryUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
+    const ctx = try countUneEscape(s, encoding.QueryComponent);
+
+    unescape(buf, ctx, s, encoding.QueryComponent);
+
+    return buf[0..ctx.buffer_size];
+}
+
 pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
     const ctx = countEscape(s, encoding.PathSegment);
     try a.resize(ctx.len());
@@ -229,6 +238,14 @@ pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
 
     try a.resize(0);
     try a.appendSlice(buf);
+}
+
+pub fn pathUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
+    const ctx = try countUneEscape(s, encoding.PathSegment);
+
+    unescape(buf, ctx, s, encoding.PathSegment);
+
+    return buf[0..ctx.buffer_size];
 }
 
 const EscapeContext = struct {
@@ -325,19 +342,19 @@ pub fn stringSort(comptime T: type) fn (void, T, T) bool {
     }.inner;
 }
 
-// Values maps a string key to a list of values.
-// It is typically used for query parameters and form values.
-// Unlike in the http.Header map, the keys in a Values map
-// are case-sensitive.
+/// Values maps a string key to a list of values.
+/// It is typically used for query parameters and form values.
+/// Unlike in the http.Header map, the keys in a Values map
+/// are case-sensitive.
 pub const Values = struct {
-    data: StringHashMap([]const u8),
+    data: StringMap,
     allocator: Allocator,
 
     const Self = @This();
 
     pub fn init(allocator: Allocator) Values {
         return .{
-            .data = StringHashMap([]const u8).init(allocator),
+            .data = StringMap.init(allocator),
             .allocator = allocator,
         };
     }
@@ -346,14 +363,12 @@ pub const Values = struct {
         self.data.deinit();
     }
 
-    // Get gets the first value associated with the given key.
-    // If there are no values associated with the key, Get returns
-    // the empty string. To access multiple values, use the map
-    // directly.
+    /// Get gets the first value associated with the given key.
     pub fn get(self: *Self, key: []const u8) ?[]const u8 {
         return self.data.get(key);
     }
 
+    /// get query unescape data
     pub fn getOrig(self: *Self, key: []const u8) ?[]const u8 {
         if (self.data.get(key)) |val| {
             const res = unescapeQuery(self.allocator, val) catch {
@@ -366,16 +381,16 @@ pub const Values = struct {
         return null;
     }
 
-    // Set sets the key to value. It replaces any existing
-    // values.
+    /// Set sets the key to value. It replaces any existing
+    /// values.
     pub fn set(self: *Self, key: []const u8, val: []const u8) !void {
         _ = try self.data.getOrPut(key);
 
         try self.add(key, val);
     }
 
-    // Add adds the value to key. It appends to any existing
-    // values associated with key.
+    /// Add adds the value to key. It appends to any existing
+    /// values associated with key.
     pub fn add(self: *Self, key: []const u8, val: []const u8) !void {
         try self.data.put(key, val);
     }
@@ -385,11 +400,7 @@ pub const Values = struct {
     }
 
     pub fn has(self: *Self, key: []const u8) bool {
-        if (self.data.get(key) != null) {
-            return true;
-        }
-
-        return false;
+        return self.data.contains(key);
     }
 
     /// Encode encodes the values into `URL encoded` form
@@ -460,9 +471,6 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
     var v = Values.init(allocator);
 
     var query_data: []const u8 = query;
-
-    var buf_escape = std.ArrayList(u8).init(allocator);
-    defer buf_escape.deinit();
 
     while (query_data.len > 0) {
         const cut_data = bytes.cut(query_data, "&");

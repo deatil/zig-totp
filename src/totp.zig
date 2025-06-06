@@ -554,6 +554,7 @@ test "test GoogleLowerCaseSecret" {
     const check = "qlt6vmy6svfx4bt4rpmisaiyol6hihca";
 
     try testing.expectFmt(check, "{s}", .{sec});
+    try testing.expectEqualStrings("Google", key.issuer());
 
     const n = time.now().utc();
     const passcode = try generateCode(alloc, key.secret(), n);
@@ -578,6 +579,13 @@ test "test SteamSecret" {
     try testing.expectFmt(check, "{s}", .{sec});
     try testing.expectEqual(otps.Encoder.Steam, key.encoder());
     try testing.expectEqual(5, key.digits().length());
+    try testing.expectEqualStrings("username%20steam", key.issuer());
+    try testing.expectEqualStrings("username", key.accountName());
+
+    const issuer2 = try url.unescapeQuery(alloc, key.issuer());
+    defer alloc.free(issuer2);
+
+    try testing.expectEqualStrings("username steam", issuer2);
 
     const n = time.now().utc();
     const opts = ValidateOpts{
