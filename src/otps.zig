@@ -33,7 +33,7 @@ pub const Key = struct {
 
         var query: []const u8 = "";
         if (u.query) |val| {
-            query = try std.fmt.allocPrint(a, "{raw}", .{val});
+            query = try fmt.allocPrint(a, "{raw}", .{val});
         } else {
             query = "";
         }
@@ -171,16 +171,7 @@ pub const Key = struct {
 
     /// return url string
     pub fn urlString(self: *Self) []const u8 {
-        const a = self.alloc;
-
-        var buf = std.ArrayList(u8).init(a);
-        defer buf.deinit();
-
-        self.url.format(";@+/?#", .{}, buf.writer()) catch {
-            return "";
-        };
-
-        const url_str = buf.toOwnedSlice() catch "";
+        const url_str = fmt.allocPrint(self.alloc, "{;@+/?#}", .{self.url}) catch "";
         return url_str;
     }
 };

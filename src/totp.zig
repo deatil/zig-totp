@@ -189,7 +189,7 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     const path = try path_buf.toOwnedSlice();
     defer allocator.free(path);
 
-    var u = url.Uri{
+    const u: url.Uri = .{
         .scheme = "otpauth",
         .user = null,
         .password = null,
@@ -200,12 +200,7 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
         .fragment = null,
     };
 
-    var buf_url = std.ArrayList(u8).init(allocator);
-    defer buf_url.deinit();
-
-    try u.format(";@+/?#", .{}, buf_url.writer());
-
-    const url_str = try buf_url.toOwnedSlice();
+    const url_str = fmt.allocPrint(allocator, "{;@+/?#}", .{u}) catch "";
     defer allocator.free(url_str);
 
     return otps.Key.init(allocator, url_str);
