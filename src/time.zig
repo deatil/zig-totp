@@ -55,8 +55,7 @@ pub const Location = struct {
         }
 
         const o = self.offset;
-        const name = self.fixedName(o, false);
-        return @as([]const u8, name);
+        return self.fixedName(o, false);
     }
 
     /// eg: +0800
