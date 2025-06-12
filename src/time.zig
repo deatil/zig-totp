@@ -3,6 +3,7 @@ const mem = std.mem;
 const time = std.time;
 const epoch = time.epoch;
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 
 const string = []const u8;
 
@@ -49,28 +50,54 @@ pub const Location = struct {
     }
 
     /// if name.len > 0 return name, or return offset string
-    pub fn string(self: Self) []const u8 {
+    pub fn string(self: Self, writer: anytype) !void {
         if (self.name.len > 0) {
-            return self.name;
+            try writer.writeAll(self.name);
+        } else {
+            try self.offsetString(writer);
         }
+    }
 
-        const o = self.offset;
-        return self.fixedName(o, false);
+    /// if name.len > 0 return name, or return offset string
+    pub fn stringAlloc(self: Self, alloc: Allocator) ![]const u8 {
+        var list = std.ArrayList(u8).init(alloc);
+        defer list.deinit();
+
+        try self.string(list.writer());
+        return list.toOwnedSlice();
     }
 
     /// eg: +0800
-    pub fn offsetString(self: Self) []const u8 {
+    pub fn offsetString(self: Self, writer: anytype) !void {
         const o = self.offset;
-        return self.fixedName(o, false);
+        try self.fixedName(o, false, writer);
+    }
+
+    /// eg: +0800
+    pub fn offsetStringAlloc(self: Self, alloc: Allocator) ![]const u8 {
+        var list = std.ArrayList(u8).init(alloc);
+        defer list.deinit();
+
+        try self.offsetString(list.writer());
+        return list.toOwnedSlice();
     }
 
     /// eg: +08:00
-    pub fn offsetFormatString(self: Self) []const u8 {
+    pub fn offsetFormatString(self: Self, writer: anytype) !void {
         const o = self.offset;
-        return self.fixedName(o, true);
+        try self.fixedName(o, true, writer);
     }
 
-    fn fixedName(self: Self, offset: i32, is_format: bool) []const u8 {
+    /// eg: +08:00
+    pub fn offsetFormatStringAlloc(self: Self, alloc: Allocator) ![]const u8 {
+        var list = std.ArrayList(u8).init(alloc);
+        defer list.deinit();
+
+        try self.offsetFormatString(list.writer());
+        return list.toOwnedSlice();
+    }
+
+    fn fixedName(self: Self, offset: i32, is_format: bool, writer: anytype) !void {
         _ = self;
 
         var new_offset: u64 = 0;
@@ -111,8 +138,7 @@ pub const Location = struct {
             buf[w] = '+';
         }
 
-        const oo = buf[w..];
-        return @as([]const u8, oo[0..]);
+        try writer.writeAll(buf[w..]);
     }
 
     pub fn parseName(str: []const u8) !i32 {
@@ -1088,16 +1114,13 @@ pub const Time = struct {
                     .SSSSSSSSS => try writer.print("{d:0>9}", .{ns}),
 
                     .z => {
-                        const timezone = tz.string();
-                        try writer.writeAll(timezone);
+                        try tz.string(writer);
                     },
                     .Z => {
-                        const timezone = tz.offsetFormatString();
-                        try writer.writeAll(timezone);
+                        try tz.offsetFormatString(writer);
                     },
                     .ZZ => {
-                        const timezone = tz.offsetString();
-                        try writer.writeAll(timezone);
+                        try tz.offsetString(writer);
                     },
 
                     .x => try writer.print("{}", .{self.milliTimestamp()}),
@@ -1110,7 +1133,7 @@ pub const Time = struct {
         }
     }
 
-    pub fn formatAlloc(self: Self, alloc: std.mem.Allocator, comptime fmt: string) !string {
+    pub fn formatAlloc(self: Self, alloc: Allocator, comptime fmt: string) !string {
         var list = std.ArrayList(u8).init(alloc);
         defer list.deinit();
 
@@ -1426,7 +1449,7 @@ pub const Duration = struct {
         };
     }
 
-    pub fn string(self: Self) []const u8 {
+    pub fn string(self: Self, writer: anytype) !void {
         var buf: [32]u8 = undefined;
         var w = buf.len;
         var u: u64 = undefined;
@@ -1449,7 +1472,9 @@ pub const Duration = struct {
             w -= 1;
             if (u == 0) {
                 const s = "0s";
-                return s[0..];
+
+                try writer.writeAll(s[0..]);
+                return;
             } else if (u < @as(u64, @intCast(Microsecond.value))) {
                 // print nanoseconds
                 prec = 0;
@@ -1499,8 +1524,15 @@ pub const Duration = struct {
             buf[w] = '-';
         }
 
-        const ww = w;
-        return buf[ww..];
+        try writer.writeAll(buf[w..]);
+    }
+
+    pub fn stringAlloc(self: Self, alloc: Allocator) ![]const u8 {
+        var list = std.ArrayList(u8).init(alloc);
+        defer list.deinit();
+
+        try self.string(list.writer());
+        return list.toOwnedSlice();
     }
 
     /// nanoseconds returns the duration as an integer nanosecond count.
@@ -2112,6 +2144,8 @@ test "isZero" {
 }
 
 test "format show" {
+    const alloc = testing.allocator;
+
     const ii_0: i128 = 1691879007511594906;
 
     const time_0 = Time.fromNanoTimestamp(ii_0).setLoc(Location.fixed(480));
@@ -2133,8 +2167,13 @@ test "format show" {
     try testing.expectFmt("511", "{d}", .{time_0.milliseconds()});
     try testing.expectFmt("225", "{d}", .{time_0.yearDay()});
 
-    try testing.expectFmt("+0800", "{s}", .{time_0.location().string()});
-    try testing.expectFmt("+0800", "{s}", .{time_0.location().offsetString()});
+    const os_str = try time_0.location().stringAlloc(alloc);
+    defer alloc.free(os_str);
+    try testing.expectFmt("+0800", "{s}", .{os_str});
+
+    const os = try time_0.location().offsetStringAlloc(alloc);
+    defer alloc.free(os);
+    try testing.expectFmt("+0800", "{s}", .{os});
 }
 
 test "from time" {
@@ -2369,11 +2408,18 @@ test "addDate" {
 }
 
 test "Duration" {
+    const alloc = testing.allocator;
+
     const dur = Duration.init(2 * Duration.Minute.value + 1 * Duration.Hour.value + 5 * Duration.Second.value);
     const dur2 = Duration.init(-dur.value);
 
-    try testing.expectFmt("1h2m5s", "{s}", .{dur.string()});
-    try testing.expectFmt("-1h2m5s", "{s}", .{dur2.string()});
+    const dur_str = try dur.stringAlloc(alloc);
+    defer alloc.free(dur_str);
+    try testing.expectFmt("1h2m5s", "{s}", .{dur_str});
+
+    const dur2_str = try dur2.stringAlloc(alloc);
+    defer alloc.free(dur2_str);    
+    try testing.expectFmt("-1h2m5s", "{s}", .{dur2_str});
     try testing.expectFmt("3725000000000", "{d}", .{dur.nanoseconds()});
     try testing.expectFmt("3725000000", "{d}", .{dur.microseconds()});
     try testing.expectFmt("3725000", "{d}", .{dur.milliseconds()});
@@ -2458,14 +2504,20 @@ test "compare" {
 }
 
 test "time sub" {
+    const alloc = testing.allocator;
+
     const time_0 = Time.fromDatetime(2023, 8, 13, 6, 23, 27, 12, Location.fixed(480));
     const time_1 = Time.fromDatetime(2023, 8, 13, 6, 25, 27, 12, Location.fixed(480));
 
     const time_sub_1 = time_0.sub(time_1);
-    try testing.expectFmt("-2m0s", "{s}", .{time_sub_1.string()});
+    const time_sub_1_str = try time_sub_1.stringAlloc(alloc);
+    defer alloc.free(time_sub_1_str);    
+    try testing.expectFmt("-2m0s", "{s}", .{time_sub_1_str});
 
     const time_sub_2 = time_1.sub(time_0);
-    try testing.expectFmt("2m0s", "{s}", .{time_sub_2.string()});
+    const time_sub_2_str = try time_sub_2.stringAlloc(alloc);
+    defer alloc.free(time_sub_2_str);    
+    try testing.expectFmt("2m0s", "{s}", .{time_sub_2_str});
 }
 
 test "time until and since" {
@@ -2479,24 +2531,45 @@ test "time until and since" {
 }
 
 test "Location fixed name" {
+    const alloc = testing.allocator;
+
     const loc_8 = Location.fixed(480);
     const loc_fu8 = Location.fixed(-480);
     const loc_fu0 = Location.fixed(0);
 
-    try testing.expectFmt("+0800", "{s}", .{loc_8.string()});
-    try testing.expectFmt("-0800", "{s}", .{loc_fu8.string()});
-    try testing.expectFmt("+0000", "{s}", .{loc_fu0.string()});
+    const loc_8_str = try loc_8.stringAlloc(alloc);
+    defer alloc.free(loc_8_str);
+    try testing.expectFmt("+0800", "{s}", .{loc_8_str});
+
+    const loc_fu8_str = try loc_fu8.stringAlloc(alloc);
+    defer alloc.free(loc_fu8_str);
+    try testing.expectFmt("-0800", "{s}", .{loc_fu8_str});
+
+    const loc_fu0_str = try loc_fu0.stringAlloc(alloc);
+    defer alloc.free(loc_fu0_str);
+    try testing.expectFmt("+0000", "{s}", .{loc_fu0_str});
 
     const loc_22 = Location.fixed(22 * 60);
     const loc_fu22 = Location.fixed(-22 * 60);
-    try testing.expectFmt("+2200", "{s}", .{loc_22.string()});
-    try testing.expectFmt("-2200", "{s}", .{loc_fu22.string()});
+
+    const loc_22_str = try loc_22.stringAlloc(alloc);
+    defer alloc.free(loc_22_str);
+    try testing.expectFmt("+2200", "{s}", .{loc_22_str});
+
+    const loc_fu22_str = try loc_fu22.stringAlloc(alloc);
+    defer alloc.free(loc_fu22_str);
+    try testing.expectFmt("-2200", "{s}", .{loc_fu22_str});
 
     const loc_utc = Location.utc();
-    try testing.expectFmt("UTC", "{s}", .{loc_utc.string()});
+
+    const loc_utc_str = try loc_utc.stringAlloc(alloc);
+    defer alloc.free(loc_utc_str);
+    try testing.expectFmt("UTC", "{s}", .{loc_utc_str});
 
     const loc_utc1 = Location.create(481, "UTC1");
-    try testing.expectFmt("UTC1", "{s}", .{loc_utc1.string()});
+    const loc_utc1_str = try loc_utc1.stringAlloc(alloc);
+    defer alloc.free(loc_utc1_str);
+    try testing.expectFmt("UTC1", "{s}", .{loc_utc1_str});
 }
 
 test "isDigit" {
@@ -2916,6 +2989,8 @@ test "getNumFromOrdinal" {
 }
 
 test "Location parse" {
+    const alloc = testing.allocator;
+
     const val_1 = "+0800";
     const val_2 = "-0930";
 
@@ -2925,13 +3000,25 @@ test "Location parse" {
 
     const t_1 = try Location.parse(val_1);
     try testing.expectFmt("28800", "{d}", .{t_1.offset});
-    try testing.expectFmt("+0800", "{s}", .{t_1.string()});
-    try testing.expectFmt("+08:00", "{s}", .{t_1.offsetFormatString()});
+
+    const loc1 = try t_1.stringAlloc(alloc);
+    defer alloc.free(loc1);
+    try testing.expectFmt("+0800", "{s}", .{loc1});
+
+    const os1 = try t_1.offsetFormatStringAlloc(alloc);
+    defer alloc.free(os1);
+    try testing.expectFmt("+08:00", "{s}", .{os1});
 
     const t_2 = try Location.parse(val_2);
     try testing.expectFmt("-34200", "{d}", .{t_2.offset});
-    try testing.expectFmt("-0930", "{s}", .{t_2.string()});
-    try testing.expectFmt("-09:30", "{s}", .{t_2.offsetFormatString()});
+
+    const loc2 = try t_2.stringAlloc(alloc);
+    defer alloc.free(loc2);
+    try testing.expectFmt("-0930", "{s}", .{loc2});
+
+    const os2 = try t_2.offsetFormatStringAlloc(alloc);
+    defer alloc.free(os2);
+    try testing.expectFmt("-09:30", "{s}", .{os2});
 
     const num_3 = try parseTimezone(val_3);
     try testing.expectFmt("570", "{d}", .{num_3.value});
