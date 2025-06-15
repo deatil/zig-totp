@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const sort = std.sort;
+const testing = std.testing;
 const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayList(u8);
@@ -117,7 +118,7 @@ fn unescape(t: []u8, ctx: UnescapeContext, s: []const u8, mode: encoding) void {
             }
         }
     } else {
-        @memcpy(t, s);
+        @memcpy(t[0..ctx.buffer_size], s);
     }
 }
 
@@ -296,7 +297,7 @@ fn escape(t: []u8, ctx: EscapeContext, s: []const u8, mode: encoding) void {
             }
         }
     } else {
-        @memcpy(t[0..], s[0..]);
+        @memcpy(t[0..ctx.len()], s);
     }
 }
 
@@ -541,8 +542,6 @@ pub fn unescapeQuery(alloc: Allocator, query: []const u8) ![]const u8 {
     return res;
 }
 
-const testing = std.testing;
-
 test "test Values" {
     const alloc = testing.allocator;
 
@@ -568,6 +567,26 @@ test "test Values" {
     _ = v.del("issuer2");
 
     try testing.expectEqual(v.has("issuer2"), false);
+}
+
+test "pathUnescapeBuf" {
+    const test_data = "/username%20steam:usernamedata";
+    var buf: [100]u8 = undefined;
+
+    const res = try pathUnescapeBuf(&buf, test_data);
+
+    const check = "/username steam:usernamedata";
+    try testing.expectEqualStrings(check, res);
+}
+
+test "queryUnescapeBuf" {
+    const test_data = "issuer=issuer_val&secret=secret_val+data";
+    var buf: [100]u8 = undefined;
+
+    const res = try queryUnescapeBuf(&buf, test_data);
+
+    const check = "issuer=issuer_val&secret=secret_val data";
+    try testing.expectEqualStrings(check, res);
 }
 
 test "test Values 2" {
@@ -678,7 +697,7 @@ test "test parseQuery" {
 
 test "URI RFC example 1" {
     const uri = "foo://example.com:8042/over/there?name=ferret#nose";
-    try std.testing.expectEqual(Uri{
+    try testing.expectEqual(Uri{
         .scheme = uri[0..3],
         .user = null,
         .password = null,
@@ -701,7 +720,7 @@ test "URI format" {
         .query = null,
         .fragment = null,
     };
-    try std.testing.expectFmt("file:/foo/bar/baz", "{;/?#}", .{uri});
+    try testing.expectFmt("file:/foo/bar/baz", "{;/?#}", .{uri});
 }
 
 test "URI format 2" {
@@ -717,7 +736,7 @@ test "URI format 2" {
         .query = .{ .percent_encoded = uri[34..45] },
         .fragment = .{ .percent_encoded = uri[46..50] },
     };
-    try std.testing.expectFmt(uri, "{;@+/?#}", .{uri1});
+    try testing.expectFmt(uri, "{;@+/?#}", .{uri1});
 }
 
 test "URI query encoding" {
@@ -725,5 +744,5 @@ test "URI query encoding" {
     const parsed = try Uri.parse(address);
 
     // format the URI to percent encode it
-    try std.testing.expectFmt("/?response-content-type=application%2Foctet-stream", "{/?}", .{parsed});
+    try testing.expectFmt("/?response-content-type=application%2Foctet-stream", "{/?}", .{parsed});
 }
