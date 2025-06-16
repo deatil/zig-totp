@@ -270,7 +270,7 @@ pub const Digits = struct {
 
     // Length returns the number of characters for this Digits.
     pub fn length(self: Self) u32 {
-        return @as(u32, self.value);
+        return self.value;
     }
 
     // Format converts an integer into the zero-filled size for this Digits.
@@ -290,9 +290,9 @@ pub const Digits = struct {
         try data.writer().print("{}", .{in});
 
         const res = try data.toOwnedSlice();
-        const new_res = try alloc.dupe(u8, res);
-
         defer alloc.free(res);
+
+        const new_res = try alloc.dupe(u8, res);
 
         if (len < inlen) {
             defer alloc.free(new_res);

@@ -118,7 +118,7 @@ fn unescape(t: []u8, ctx: UnescapeContext, s: []const u8, mode: encoding) void {
             }
         }
     } else {
-        @memcpy(t[0..ctx.buffer_size], s);
+        @memcpy(t[0..ctx.len()], s);
     }
 }
 
@@ -127,12 +127,14 @@ const UnescapeContext = struct {
     has_plus: bool,
     length: usize,
 
+    const Self = @This();
+
     // returns true if we can unescape the string with the current unescape context.
-    fn canUnEscape(self: UnescapeContext) bool {
+    fn canUnEscape(self: Self) bool {
         return !(self.buffer_size == self.length and !self.has_plus);
     }
 
-    fn len(self: UnescapeContext) usize {
+    fn len(self: Self) usize {
         return self.buffer_size;
     }
 };
@@ -196,7 +198,7 @@ pub fn queryEscape(a: *ArrayList, s: []const u8) !void {
 
 pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.QueryComponent);
-    try a.resize(ctx.buffer_size);
+    try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
     defer a.allocator.free(buf);
@@ -212,7 +214,7 @@ pub fn queryUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
 
     unescape(buf, ctx, s, encoding.QueryComponent);
 
-    return buf[0..ctx.buffer_size];
+    return buf[0..ctx.len()];
 }
 
 pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
@@ -230,7 +232,7 @@ pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
 
 pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.PathSegment);
-    try a.resize(ctx.buffer_size);
+    try a.resize(ctx.len());
 
     const buf = try a.toOwnedSlice();
     defer a.allocator.free(buf);
@@ -246,7 +248,7 @@ pub fn pathUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
 
     unescape(buf, ctx, s, encoding.PathSegment);
 
-    return buf[0..ctx.buffer_size];
+    return buf[0..ctx.len()];
 }
 
 const EscapeContext = struct {
@@ -254,11 +256,13 @@ const EscapeContext = struct {
     hex_count: usize,
     length: usize,
 
-    fn canEscape(self: EscapeContext) bool {
+    const Self = @This();
+
+    fn canEscape(self: Self) bool {
         return !(self.space_count == 0 and self.hex_count == 0);
     }
 
-    fn len(self: EscapeContext) usize {
+    fn len(self: Self) usize {
         return self.length + 2 * self.hex_count;
     }
 };
