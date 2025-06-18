@@ -155,7 +155,7 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     return otps.Key.init(allocator, url_str);
 }
 
-test "test generateCode" {
+test "generateCode" {
     const alloc = testing.allocator;
 
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
@@ -169,7 +169,7 @@ test "test generateCode" {
     try testing.expectEqual(true, res);
 }
 
-test "test generate" {
+test "generate" {
     const alloc = testing.allocator;
 
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
@@ -192,7 +192,7 @@ test "test generate" {
     try testing.expectFmt(check, "{s}", .{keyurl});
 }
 
-test "test generate no secret" {
+test "generate no secret" {
     const alloc = testing.allocator;
 
     var key = try generate(alloc, GenerateOpts{
@@ -211,7 +211,7 @@ test "test generate no secret" {
 }
 
 // Test values from http://tools.ietf.org/html/rfc4226#appendix-D
-test "test ValidateRFCMatrix" {
+test "ValidateRFCMatrix" {
     const alloc = testing.allocator;
 
     const secret = try base32.encode(alloc, "12345678901234567890", true);
@@ -241,7 +241,7 @@ fn testGenerateCodeCustom(check: []const u8, alloc: Allocator, secret: []const u
     try testing.expectEqualStrings(check, res);
 }
 
-test "test GenerateRFCMatrix" {
+test "GenerateRFCMatrix" {
     const alloc = testing.allocator;
 
     const secret = try base32.encode(alloc, "12345678901234567890", true);
@@ -264,7 +264,7 @@ test "test GenerateRFCMatrix" {
     try testGenerateCodeCustom("520489", alloc, secret, 9, opts);
 }
 
-test "test GenerateCodeCustom" {
+test "GenerateCodeCustom" {
     const alloc = testing.allocator;
 
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
@@ -291,7 +291,7 @@ test "test GenerateCodeCustom" {
     try testing.expectEqual(false, err_true);
 }
 
-test "test ValidateInvalid" {
+test "ValidateInvalid" {
     const alloc = testing.allocator;
 
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
@@ -324,7 +324,7 @@ test "test ValidateInvalid" {
     try testing.expectEqual(false, validate(alloc, "000000", 11, secSha1));
 }
 
-test "test ValidatePadding" {
+test "ValidatePadding" {
     const alloc = testing.allocator;
 
     const opts = ValidateOpts{
@@ -339,7 +339,7 @@ test "test ValidatePadding" {
     try testing.expectEqual(true, validateCustom(alloc, "831097", 0, "jbswy3dpehpk3px", opts));
 }
 
-test "test generate 2" {
+test "generate 2" {
     const alloc = testing.allocator;
 
     var key = try generate(alloc, GenerateOpts{

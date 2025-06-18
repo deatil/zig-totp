@@ -332,7 +332,7 @@ fn assertEqual(comptime expected_hex: [:0]const u8, input: []const u8) !void {
     try testing.expectEqualSlices(u8, &expected_bytes, input);
 }
 
-test "test Encoder" {
+test "Encoder" {
     const steam = Encoder.Steam;
     const default = Encoder.Default;
 
@@ -340,7 +340,7 @@ test "test Encoder" {
     try testing.expectEqual(default, Encoder.Default);
 }
 
-test "test Digits" {
+test "Digits" {
     const alloc = testing.allocator;
 
     const eight = Digits.Eight;
@@ -371,7 +371,7 @@ test "test Digits" {
     try testing.expectEqual(false, eight.equal(Digits.init(7)));
 }
 
-test "test Key" {
+test "Key" {
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
@@ -433,7 +433,7 @@ test "test Key" {
     try testing.expectEqual(Algorithm.SHA1, parse_url5.algorithm());
 }
 
-test "test Key 2" {
+test "Key 2" {
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
@@ -532,7 +532,7 @@ test "test Key 2" {
     try testing.expectEqual(30, pu8.period());
 }
 
-test "test Algorithm" {
+test "Algorithm" {
     try testing.expectEqualStrings("MD5", Algorithm.MD5.string());
     try testing.expectEqualStrings("SHA1", Algorithm.SHA1.string());
     try testing.expectEqualStrings("SHA256", Algorithm.SHA256.string());

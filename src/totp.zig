@@ -203,7 +203,7 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     return otps.Key.init(allocator, url_str);
 }
 
-test "test generate" {
+test "generate" {
     const alloc = testing.allocator;
 
     const secret = "test-data";
@@ -227,7 +227,7 @@ test "test generate" {
     try testing.expectFmt(check, "{s}", .{keyurl});
 }
 
-test "test generate no secret" {
+test "generate no secret" {
     const alloc = testing.allocator;
 
     var key = try generate(alloc, .{
@@ -247,7 +247,7 @@ test "test generate no secret" {
 }
 
 // Test vectors from http://tools.ietf.org/html/rfc6238#appendix-B
-test "test ValidateRFCMatrix" {
+test "ValidateRFCMatrix" {
     const alloc = testing.allocator;
 
     const secMd5 = try base32.encode(alloc, "1234567890123456", true);
@@ -318,7 +318,7 @@ fn testGenerateCodeCustom(check: []const u8, alloc: Allocator, secret: []const u
     try testing.expectEqualStrings(check, res);
 }
 
-test "test GenerateRFCMatrix" {
+test "GenerateRFCMatrix" {
     const alloc = testing.allocator;
 
     const secMd5 = try base32.encode(alloc, "1234567890123456", true);
@@ -382,7 +382,7 @@ test "test GenerateRFCMatrix" {
     try testGenerateCodeCustom("47863826", alloc, secSha512, t, optsSha512);
 }
 
-test "test ValidateSkew" {
+test "ValidateSkew" {
     const alloc = testing.allocator;
 
     const secSha1 = try base32.encode(alloc, "12345678901234567890", true);
@@ -404,7 +404,7 @@ test "test ValidateSkew" {
     try testing.expectEqual(true, try validateCustom(alloc, "94287082", secSha1, t, optsSha1));
 }
 
-test "test generate 2" {
+test "generate 2" {
     const alloc = testing.allocator;
 
     var key = try generate(alloc, GenerateOpts{
@@ -536,7 +536,7 @@ test "test generate 2" {
     try testing.expectEqual(32, key10.secret().len);
 }
 
-test "test GoogleLowerCaseSecret" {
+test "GoogleLowerCaseSecret" {
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/Google%3Afoo%40example.com?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&issuer=Google";
@@ -561,7 +561,7 @@ test "test GoogleLowerCaseSecret" {
     try testing.expectEqual(true, res);
 }
 
-test "test SteamSecret" {
+test "SteamSecret" {
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";

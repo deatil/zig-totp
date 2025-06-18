@@ -132,7 +132,7 @@ pub fn trimSpace(s: []const u8) []const u8 {
     return s[start..(stop + 1)];
 }
 
-test "test all" {
+test "bytes all" {
     try testing.expectEqual(true, contains("123erttt", "er"));
     try testing.expectEqual(false, contains("123erttt", "er2"));
 

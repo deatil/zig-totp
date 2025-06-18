@@ -70,7 +70,7 @@ pub fn totp_steam_guard(alloc: Allocator, key: []const u8, t: i64, digit: u32, p
     return code;
 }
 
-test "hotp test" {
+test "hotp" {
     const secret: []const u8 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const counter: u64 = 3;
     const digits: u32 = 6;
@@ -86,7 +86,7 @@ test "hotp test" {
     try testing.expectEqual(code, passcode);
 }
 
-test "Steam Guard test" {
+test "Steam Guard" {
     const secret: []const u8 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const counter: u64 = 5;
     const digits: u32 = 6;
@@ -103,7 +103,7 @@ test "Steam Guard test" {
     try testing.expectEqualSlices(u8, code[0..], key2[0..]);
 }
 
-test "totp test" {
+test "totp" {
     const secret: []const u8 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const t: i64 = 1234567890;
     const digits: u32 = 8;
@@ -120,7 +120,7 @@ test "totp test" {
     try testing.expectEqual(code, passcode);
 }
 
-test "Totp Steam Guard test" {
+test "Totp Steam Guard" {
     const secret: []const u8 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     const t: i64 = 1234567890;
     const digits: u32 = 8;
