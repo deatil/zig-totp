@@ -120,12 +120,12 @@ pub const Key = struct {
         const dig = self.query.get("digits");
         if (dig) |v| {
             const vv = fmt.parseInt(u32, v, 10) catch {
-                return Digits.Six;
+                return .Six;
             };
             return Digits.init(vv);
         }
 
-        return Digits.Six;
+        return .Six;
     }
 
     pub fn algorithm(self: *Self) Algorithm {
