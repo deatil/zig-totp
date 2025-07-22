@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
 
     const mod = b.addModule("zig-totp", .{
         .root_source_file = b.path("src/totp.zig"),
+        .target = target,
     });
 
     // -Dtest-filter="..."
