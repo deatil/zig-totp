@@ -186,7 +186,7 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
     const path = try path_buf.toOwnedSlice();
     defer allocator.free(path);
 
-    const u: url.Uri = .{
+    const uri: url.Uri = .{
         .scheme = "otpauth",
         .user = null,
         .password = null,
@@ -197,7 +197,9 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
         .fragment = null,
     };
 
-    const url_str = fmt.allocPrint(allocator, "{;@+/?#}", .{u}) catch "";
+    const url_str = fmt.allocPrint(allocator, "{f}", .{
+        uri.fmt(.all),
+    }) catch "";
     defer allocator.free(url_str);
 
     return otps.Key.init(allocator, url_str);

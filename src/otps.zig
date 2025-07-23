@@ -33,7 +33,7 @@ pub const Key = struct {
 
         var query: []const u8 = "";
         if (u.query) |val| {
-            query = try fmt.allocPrint(a, "{raw}", .{val});
+            query = try val.toRawMaybeAlloc(a);
         } else {
             query = "";
         }
@@ -171,7 +171,9 @@ pub const Key = struct {
 
     /// return url string
     pub fn urlString(self: *Self) []const u8 {
-        const url_str = fmt.allocPrint(self.alloc, "{;@+/?#}", .{self.url}) catch "";
+        const url_str = fmt.allocPrint(self.alloc, "{f}", .{
+            self.url.fmt(.all),
+        }) catch "";
         return url_str;
     }
 };

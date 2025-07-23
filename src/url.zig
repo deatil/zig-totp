@@ -724,7 +724,9 @@ test "URI format" {
         .query = null,
         .fragment = null,
     };
-    try testing.expectFmt("file:/foo/bar/baz", "{;/?#}", .{uri});
+    try testing.expectFmt("file:/foo/bar/baz", "{f}", .{
+        uri.fmt(.{ .scheme = true, .path = true }),
+    });
 }
 
 test "URI format 2" {
@@ -740,7 +742,9 @@ test "URI format 2" {
         .query = .{ .percent_encoded = uri[34..45] },
         .fragment = .{ .percent_encoded = uri[46..50] },
     };
-    try testing.expectFmt(uri, "{;@+/?#}", .{uri1});
+    try testing.expectFmt(uri, "{f}", .{
+        uri1.fmt(.all),
+    });
 }
 
 test "URI query encoding" {
@@ -748,5 +752,7 @@ test "URI query encoding" {
     const parsed = try Uri.parse(address);
 
     // format the URI to percent encode it
-    try testing.expectFmt("/?response-content-type=application%2Foctet-stream", "{/?}", .{parsed});
+    try testing.expectFmt("/?response-content-type=application%2Foctet-stream", "{f}", .{
+        parsed.fmt(.{ .path = true, .query = true }),
+    });
 }

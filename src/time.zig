@@ -2104,7 +2104,7 @@ test "now" {
     // std.debug.print("{d}", .{now().milliTimestamp()});
 
     const time_0 = now().milliTimestamp();
-    time.sleep(time.ns_per_ms);
+    std.Thread.sleep(time.ns_per_ms);
     const time_1 = now().milliTimestamp();
     const interval = time_1 - time_0;
 
