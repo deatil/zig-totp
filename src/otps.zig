@@ -44,7 +44,7 @@ pub const Key = struct {
             .orig = new_orig,
             .url = u,
             .query = q,
-            .query_raw = query,
+            .query_raw = try a.dupe(u8, query),
             .alloc = a,
         };
     }
