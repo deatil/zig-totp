@@ -87,7 +87,7 @@ pub const GenerateOpts = struct {
     algorithm: otps.Algorithm = .SHA1,
 };
 
-pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
+pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
     // url encode the Issuer/AccountName
     if (opts.issuer.len == 0) {
         return OtpError.GenerateMissingIssuer;
@@ -99,44 +99,44 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
 
     // otpauth://hotp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
-    var v = url.Values.init(allocator);
+    var v = url.Values.init(alloc);
     defer v.deinit();
 
     var secret: []const u8 = undefined;
     if (opts.secret.len > 0) {
-        secret = try base32.encode(allocator, opts.secret, false);
+        secret = try base32.encode(alloc, opts.secret, false);
     } else {
-        var s: []u8 = try allocator.alloc(u8, opts.secret_size);
+        var s: []u8 = try alloc.alloc(u8, opts.secret_size);
         random.bytes(s[0..]);
 
-        defer allocator.free(s);
+        defer alloc.free(s);
 
-        secret = try base32.encode(allocator, s, false);
+        secret = try base32.encode(alloc, s, false);
     }
 
-    defer allocator.free(secret);
+    defer alloc.free(secret);
 
     try v.set("secret", secret);
     try v.set("issuer", opts.issuer);
     try v.set("algorithm", opts.algorithm.string());
 
-    const digits_str = try opts.digits.string(allocator);
-    defer allocator.free(digits_str);
+    const digits_str = try opts.digits.string(alloc);
+    defer alloc.free(digits_str);
     try v.set("digits", digits_str);
 
     const raw_query = try url.encodeQuery(v);
-    defer allocator.free(raw_query);
+    defer alloc.free(raw_query);
 
-    var path_buf = std.ArrayList(u8).init(allocator);
-    defer path_buf.deinit();
+    var path_buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer path_buf.deinit(alloc);
 
-    try path_buf.appendSlice("/");
-    try path_buf.appendSlice(opts.issuer);
-    try path_buf.appendSlice(":");
-    try path_buf.appendSlice(opts.account_name);
+    try path_buf.appendSlice(alloc, "/");
+    try path_buf.appendSlice(alloc, opts.issuer);
+    try path_buf.appendSlice(alloc, ":");
+    try path_buf.appendSlice(alloc, opts.account_name);
 
-    const path = try path_buf.toOwnedSlice();
-    defer allocator.free(path);
+    const path = try path_buf.toOwnedSlice(alloc);
+    defer alloc.free(path);
 
     const uri: url.Uri = .{
         .scheme = "otpauth",
@@ -149,12 +149,12 @@ pub fn generate(allocator: Allocator, opts: GenerateOpts) !otps.Key {
         .fragment = null,
     };
 
-    const url_str = fmt.allocPrint(allocator, "{f}", .{
+    const url_str = fmt.allocPrint(alloc, "{f}", .{
         uri.fmt(.all),
     }) catch "";
-    defer allocator.free(url_str);
+    defer alloc.free(url_str);
 
-    return otps.Key.init(allocator, url_str);
+    return otps.Key.init(alloc, url_str);
 }
 
 test "generateCode" {

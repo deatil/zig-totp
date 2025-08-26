@@ -33,7 +33,7 @@ pub const Key = struct {
 
         var query: []const u8 = "";
         if (u.query) |val| {
-            query = try val.toRawMaybeAlloc(a);
+            query = try Self.toComponentRawMaybeAlloc(a, val);
         } else {
             query = "";
         }
@@ -44,7 +44,7 @@ pub const Key = struct {
             .orig = new_orig,
             .url = u,
             .query = q,
-            .query_raw = try a.dupe(u8, query),
+            .query_raw = query,
             .alloc = a,
         };
     }
@@ -176,6 +176,19 @@ pub const Key = struct {
         }) catch "";
         return url_str;
     }
+
+    fn toComponentRawMaybeAlloc(
+        alloc: Allocator,
+        component: std.Uri.Component,
+    ) ![]const u8 {
+        return switch (component) {
+            .raw => |raw| try alloc.dupe(u8, raw),
+            .percent_encoded => |percent_encoded| if (std.mem.indexOfScalar(u8, percent_encoded, '%')) |_|
+                try std.fmt.allocPrint(alloc, "{f}", .{std.fmt.alt(component, .formatRaw)})
+            else
+                try alloc.dupe(u8, percent_encoded),
+        };
+    }
 };
 
 pub const Algorithm = enum {
@@ -277,21 +290,21 @@ pub const Digits = struct {
 
     // Format converts an integer into the zero-filled size for this Digits.
     pub fn format(self: Self, alloc: Allocator, in: u32) ![]const u8 {
-        var data = std.ArrayList(u8).init(alloc);
-        defer data.deinit();
+        var data = try std.ArrayList(u8).initCapacity(alloc, 0);
+        defer data.deinit(alloc);
 
         const len = self.length();
         const inlen = formatLen(in);
 
         if (len >= inlen) {
             for (0..len - inlen) |_| {
-                try data.append('0');
+                try data.append(alloc, '0');
             }
         }
 
-        try data.writer().print("{}", .{in});
+        try data.writer(alloc).print("{}", .{in});
 
-        const res = try data.toOwnedSlice();
+        const res = try data.toOwnedSlice(alloc);
         defer alloc.free(res);
 
         const new_res = try alloc.dupe(u8, res);

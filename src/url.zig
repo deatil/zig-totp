@@ -183,30 +183,30 @@ fn countUneEscape(s: []const u8, mode: encoding) !UnescapeContext {
     };
 }
 
-pub fn queryEscape(a: *ArrayList, s: []const u8) !void {
+pub fn queryEscape(alloc: Allocator, a: *ArrayList, s: []const u8) !void {
     const ctx = countEscape(s, encoding.QueryComponent);
-    try a.resize(ctx.len());
+    try a.resize(alloc, ctx.len());
 
-    const buf = try a.toOwnedSlice();
-    defer a.allocator.free(buf);
+    const buf = try a.toOwnedSlice(alloc);
+    defer alloc.free(buf);
 
     escape(buf, ctx, s, encoding.QueryComponent);
 
-    try a.resize(0);
-    try a.appendSlice(buf);
+    try a.resize(alloc, 0);
+    try a.appendSlice(alloc, buf);
 }
 
-pub fn queryUnescape(a: *ArrayList, s: []const u8) !void {
+pub fn queryUnescape(alloc: Allocator, a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.QueryComponent);
-    try a.resize(ctx.len());
+    try a.resize(alloc, ctx.len());
 
-    const buf = try a.toOwnedSlice();
-    defer a.allocator.free(buf);
+    const buf = try a.toOwnedSlice(alloc);
+    defer alloc.free(buf);
 
     unescape(buf, ctx, s, encoding.QueryComponent);
 
-    try a.resize(0);
-    try a.appendSlice(buf);
+    try a.resize(alloc, 0);
+    try a.appendSlice(alloc, buf);
 }
 
 pub fn queryUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
@@ -217,30 +217,30 @@ pub fn queryUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
     return buf[0..ctx.len()];
 }
 
-pub fn pathEscape(a: *ArrayList, s: []const u8) !void {
+pub fn pathEscape(alloc: Allocator, a: *ArrayList, s: []const u8) !void {
     const ctx = countEscape(s, encoding.PathSegment);
-    try a.resize(ctx.len());
+    try a.resize(alloc, ctx.len());
 
-    const buf = try a.toOwnedSlice();
-    defer a.allocator.free(buf);
+    const buf = try a.toOwnedSlice(alloc);
+    defer alloc.free(buf);
 
     escape(buf, ctx, s, encoding.PathSegment);
 
-    try a.resize(0);
-    try a.appendSlice(buf);
+    try a.resize(alloc, 0);
+    try a.appendSlice(alloc, buf);
 }
 
-pub fn pathUnescape(a: *ArrayList, s: []const u8) !void {
+pub fn pathUnescape(alloc: Allocator, a: *ArrayList, s: []const u8) !void {
     const ctx = try countUneEscape(s, encoding.PathSegment);
-    try a.resize(ctx.len());
+    try a.resize(alloc, ctx.len());
 
-    const buf = try a.toOwnedSlice();
-    defer a.allocator.free(buf);
+    const buf = try a.toOwnedSlice(alloc);
+    defer alloc.free(buf);
 
     unescape(buf, ctx, s, encoding.PathSegment);
 
-    try a.resize(0);
-    try a.appendSlice(buf);
+    try a.resize(alloc, 0);
+    try a.appendSlice(alloc, buf);
 }
 
 pub fn pathUnescapeBuf(buf: []u8, s: []const u8) ![]const u8 {
@@ -400,8 +400,8 @@ pub const Values = struct {
     pub fn encode(self: *Self) ![:0]u8 {
         const alloc = self.allocator;
 
-        var buf = std.ArrayList(u8).init(alloc);
-        defer buf.deinit();
+        var buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+        defer buf.deinit(alloc);
 
         var keys = try alloc.alloc([]const u8, self.data.count());
         var key_i: usize = 0;
@@ -419,33 +419,33 @@ pub const Values = struct {
 
         sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-        var buf_escape = std.ArrayList(u8).init(alloc);
-        defer buf_escape.deinit();
+        var buf_escape = try std.ArrayList(u8).initCapacity(alloc, 0);
+        defer buf_escape.deinit(alloc);
 
         for (keys) |k| {
             const vs = self.data.get(k).?;
 
-            try queryEscape(&buf_escape, k);
+            try queryEscape(alloc, &buf_escape, k);
 
-            const key_escaped = try buf_escape.toOwnedSlice();
+            const key_escaped = try buf_escape.toOwnedSlice(alloc);
             defer alloc.free(key_escaped);
-            try buf_escape.resize(0);
+            try buf_escape.resize(alloc, 0);
 
             if (buf.items.len > 0) {
-                try buf.appendSlice("&");
+                try buf.appendSlice(alloc, "&");
             }
 
-            try queryEscape(&buf_escape, vs);
-            const vv_escaped = try buf_escape.toOwnedSlice();
+            try queryEscape(alloc, &buf_escape, vs);
+            const vv_escaped = try buf_escape.toOwnedSlice(alloc);
             defer alloc.free(vv_escaped);
-            try buf_escape.resize(0);
+            try buf_escape.resize(alloc, 0);
 
-            try buf.appendSlice(key_escaped);
-            try buf.appendSlice("=");
-            try buf.appendSlice(vv_escaped);
+            try buf.appendSlice(alloc, key_escaped);
+            try buf.appendSlice(alloc, "=");
+            try buf.appendSlice(alloc, vv_escaped);
         }
 
-        return buf.toOwnedSliceSentinel(0);
+        return buf.toOwnedSliceSentinel(alloc, 0);
     }
 };
 
@@ -488,8 +488,8 @@ pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
 pub fn encodeQuery(v: Values) ![:0]u8 {
     const alloc = v.allocator;
 
-    var buf = std.ArrayList(u8).init(alloc);
-    defer buf.deinit();
+    var buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer buf.deinit(alloc);
 
     var keys = try alloc.alloc([]const u8, v.data.count());
     var key_i: usize = 0;
@@ -507,41 +507,41 @@ pub fn encodeQuery(v: Values) ![:0]u8 {
 
     sort.block([]const u8, keys, {}, stringSort([]const u8));
 
-    var buf_escape = std.ArrayList(u8).init(alloc);
-    defer buf_escape.deinit();
+    var buf_escape = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer buf_escape.deinit(alloc);
 
     for (keys) |k| {
         const vs = v.data.get(k).?;
 
-        try pathEscape(&buf_escape, k);
+        try pathEscape(alloc, &buf_escape, k);
 
-        const key_escaped = try buf_escape.toOwnedSlice();
+        const key_escaped = try buf_escape.toOwnedSlice(alloc);
         defer alloc.free(key_escaped);
-        try buf_escape.resize(0);
+        try buf_escape.resize(alloc, 0);
 
         if (buf.items.len > 0) {
-            try buf.appendSlice("&");
+            try buf.appendSlice(alloc, "&");
         }
 
-        try pathEscape(&buf_escape, vs);
-        const vv_escaped = try buf_escape.toOwnedSlice();
+        try pathEscape(alloc, &buf_escape, vs);
+        const vv_escaped = try buf_escape.toOwnedSlice(alloc);
         defer alloc.free(vv_escaped);
-        try buf_escape.resize(0);
+        try buf_escape.resize(alloc, 0);
 
-        try buf.appendSlice(key_escaped);
-        try buf.appendSlice("=");
-        try buf.appendSlice(vv_escaped);
+        try buf.appendSlice(alloc, key_escaped);
+        try buf.appendSlice(alloc, "=");
+        try buf.appendSlice(alloc, vv_escaped);
     }
 
-    return buf.toOwnedSliceSentinel(0);
+    return buf.toOwnedSliceSentinel(alloc, 0);
 }
 
 pub fn unescapeQuery(alloc: Allocator, query: []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    defer buf.deinit();
+    var buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer buf.deinit(alloc);
 
-    try queryUnescape(&buf, query);
-    const res = try buf.toOwnedSlice();
+    try queryUnescape(alloc, &buf, query);
+    const res = try buf.toOwnedSlice(alloc);
 
     return res;
 }

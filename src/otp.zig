@@ -45,15 +45,15 @@ pub fn steam_guard(alloc: Allocator, key: []const u8, counter: u64, digit: u32, 
 
     var fc = result;
 
-    var bin_code = std.ArrayList(u8).init(alloc);
-    defer bin_code.deinit();
+    var bin_code = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer bin_code.deinit(alloc);
 
     for (0..digit) |_| {
-        try bin_code.append(STEAM_CHARS[(fc % STEAM_CHARS.len)]);
+        try bin_code.append(alloc, STEAM_CHARS[(fc % STEAM_CHARS.len)]);
         fc /= @as(u32, @intCast(STEAM_CHARS.len));
     }
 
-    return bin_code.toOwnedSlice();
+    return bin_code.toOwnedSlice(alloc);
 }
 
 pub fn totp(alloc: Allocator, key: []const u8, t: i64, digit: u32, period: u32, alg: Algorithm) !u32 {

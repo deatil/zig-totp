@@ -359,19 +359,19 @@ pub fn encode(alloc: Allocator, input: []const u8, padding: bool) ![]const u8 {
 }
 
 pub fn decode(alloc: Allocator, input: []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    defer buf.deinit();
+    var buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer buf.deinit(alloc);
 
-    try buf.appendSlice(input[0..]);
+    try buf.appendSlice(alloc, input[0..]);
 
     const n = input.len % 8;
     if (n != 0) {
         for (0..8 - n) |_| {
-            try buf.append('=');
+            try buf.append(alloc, '=');
         }
     }
 
-    const encoded = try buf.toOwnedSlice();
+    const encoded = try buf.toOwnedSlice(alloc);
     defer alloc.free(encoded);
 
     const result = try std_encoding.decodeString(alloc, encoded);
