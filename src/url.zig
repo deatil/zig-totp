@@ -459,8 +459,8 @@ pub const Values = struct {
 // A setting without an equals sign is interpreted as a key set to an empty
 // value.
 // Settings containing a non-URL-encoded semicolon are considered invalid.
-pub fn parseQuery(allocator: Allocator, query: []const u8) !Values {
-    var v = Values.init(allocator);
+pub fn parseQuery(alloc: Allocator, query: []const u8) !Values {
+    var v = Values.init(alloc);
 
     var query_data: []const u8 = query;
 

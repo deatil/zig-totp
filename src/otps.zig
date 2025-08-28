@@ -26,26 +26,26 @@ pub const Key = struct {
 
     const Self = @This();
 
-    pub fn init(a: Allocator, orig: []const u8) !Key {
-        const new_orig = try a.dupe(u8, orig);
+    pub fn init(alloc: Allocator, orig: []const u8) !Key {
+        const new_orig = try alloc.dupe(u8, orig);
 
         const u = try url.Uri.parse(new_orig);
 
         var query: []const u8 = "";
         if (u.query) |val| {
-            query = try Self.toComponentRawMaybeAlloc(a, val);
+            query = try Self.toComponentRawMaybeAlloc(alloc, val);
         } else {
             query = "";
         }
 
-        const q = try url.parseQuery(a, query);
+        const q = try url.parseQuery(alloc, query);
 
         return .{
             .orig = new_orig,
             .url = u,
             .query = q,
             .query_raw = query,
-            .alloc = a,
+            .alloc = alloc,
         };
     }
 
@@ -129,14 +129,14 @@ pub const Key = struct {
     }
 
     pub fn algorithm(self: *Self) Algorithm {
-        const a = self.alloc;
+        const alloc = self.alloc;
 
         const algo = self.query.get("algorithm");
         if (algo) |val| {
-            const alg = ascii.allocLowerString(a, val) catch {
+            const alg = ascii.allocLowerString(alloc, val) catch {
                 return .SHA1;
             };
-            defer a.free(alg);
+            defer alloc.free(alg);
 
             if (bytes.eq(alg, "md5")) {
                 return .MD5;
@@ -152,14 +152,14 @@ pub const Key = struct {
 
     /// Encoder returns the encoder used or the default ("")
     pub fn encoder(self: *Self) Encoder {
-        const a = self.alloc;
+        const alloc = self.alloc;
 
         const enc = self.query.get("encoder");
         if (enc) |val| {
-            const encoder_name = ascii.allocLowerString(a, val) catch {
+            const encoder_name = ascii.allocLowerString(alloc, val) catch {
                 return .Default;
             };
-            defer a.free(encoder_name);
+            defer alloc.free(encoder_name);
 
             if (bytes.eq(encoder_name, "steam")) {
                 return .Steam;
