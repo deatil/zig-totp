@@ -1,8 +1,9 @@
 const std = @import("std");
+const Io = std.Io;
+const Random = std.Random;
 const fmt = std.fmt;
 const math = std.math;
 const testing = std.testing;
-const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
 
 pub const url = @import("url.zig");
@@ -15,8 +16,18 @@ pub const base32 = @import("base32.zig");
 
 pub const OtpError = otps.OtpError;
 
-pub fn validate(alloc: Allocator, passcode: []const u8, secret: []const u8) bool {
-    return validateCustom(alloc, passcode, secret, time.now().utc(), .{
+pub fn validate(alloc: Allocator, io: Io, passcode: []const u8, secret: []const u8) bool {
+    return validateCustom(alloc, passcode, secret, time.now(io).utc(), .{
+        .period = 30,
+        .skew = 1,
+        .digits = .Six,
+        .algorithm = .SHA1,
+        .encoder = .Default,
+    }) catch false;
+}
+
+pub fn validateAt(alloc: Allocator, passcode: []const u8, secret: []const u8, t: time.Time) bool {
+    return validateCustom(alloc, passcode, secret, t, .{
         .period = 30,
         .skew = 1,
         .digits = .Six,
@@ -32,6 +43,45 @@ pub fn generateCode(alloc: Allocator, secret: []const u8, t: time.Time) ![]const
         .digits = .Six,
         .algorithm = .SHA1,
         .encoder = .Default,
+    });
+}
+
+pub fn validateByUrl(alloc: Allocator, io: Io, passcode: []const u8, urlStr: []const u8) bool {
+    var key = otps.Key.init(alloc, urlStr) catch return false;
+    defer key.deinit();
+
+    return validateCustom(alloc, passcode, key.secret(), time.now(io).utc(), .{
+        .period = key.period(),
+        .skew = 1,
+        .digits = key.digits(),
+        .algorithm = key.algorithm(),
+        .encoder = key.encoder(),
+    }) catch false;
+}
+
+pub fn validateAtByUrl(alloc: Allocator, passcode: []const u8, urlStr: []const u8, t: time.Time) bool {
+    var key = otps.Key.init(alloc, urlStr) catch return false;
+    defer key.deinit();
+
+    return validateCustom(alloc, passcode, key.secret(), t, .{
+        .period = key.period(),
+        .skew = 1,
+        .digits = key.digits(),
+        .algorithm = key.algorithm(),
+        .encoder = key.encoder(),
+    }) catch false;
+}
+
+pub fn generateCodeByUrl(alloc: Allocator, urlStr: []const u8, t: time.Time) ![]const u8 {
+    var key = try otps.Key.init(alloc, urlStr);
+    defer key.deinit();
+
+    return generateCodeCustom(alloc, key.secret(), t, .{
+        .period = key.period(),
+        .skew = 1,
+        .digits = key.digits(),
+        .algorithm = key.algorithm(),
+        .encoder = key.encoder(),
     });
 }
 
@@ -150,6 +200,9 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         secret = try base32.encode(alloc, opts.secret, false);
     } else {
         var s: []u8 = try alloc.alloc(u8, opts.secret_size);
+        var prng = Random.DefaultPrng.init(1234);
+        const random = prng.random();
+
         random.bytes(s[0..]);
 
         defer alloc.free(s);
@@ -539,6 +592,7 @@ test "generate 2" {
 }
 
 test "GoogleLowerCaseSecret" {
+    const io = testing.io;
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/Google%3Afoo%40example.com?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&issuer=Google";
@@ -554,16 +608,20 @@ test "GoogleLowerCaseSecret" {
     const issuer = key.issuer();
     try testing.expectEqualStrings("Google", issuer);
 
-    const n = time.now().utc();
+    const n = time.now(io).utc();
     const passcode = try generateCode(alloc, key.secret(), n);
     defer alloc.free(passcode);
 
-    const res = validate(alloc, passcode, key.secret());
-
+    const res = validate(alloc, io, passcode, key.secret());
     try testing.expectEqual(true, res);
+
+    const t = time.now(io).utc();
+    const res2 = validateAt(alloc, passcode, key.secret(), t);
+    try testing.expectEqual(true, res2);
 }
 
 test "SteamSecret" {
+    const io = testing.io;
     const alloc = testing.allocator;
 
     const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
@@ -593,7 +651,7 @@ test "SteamSecret" {
 
     try testing.expectEqualStrings("secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username steam&encoder=steam", query_buf);
 
-    const n = time.now().utc();
+    const n = time.now(io).utc();
     const opts = ValidateOpts{
         .period = key.period(),
         .skew = 0,
@@ -609,4 +667,24 @@ test "SteamSecret" {
     const valid = validateCustom(alloc, passcode, key.secret(), n, opts);
 
     try testing.expectEqual(true, valid);
+}
+
+test "generateCode and validate by url" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
+
+    const n = time.now(io).utc();
+    const passcode = try generateCodeByUrl(alloc, urlStr, n);
+    defer alloc.free(passcode);
+
+    try testing.expectEqual(true, passcode.len > 0);
+
+    const valid = validateByUrl(alloc, io, passcode, urlStr);
+    try testing.expectEqual(true, valid);
+
+    const t = time.now(io).utc();
+    const valid2 = validateAtByUrl(alloc, passcode, urlStr, t);
+    try testing.expectEqual(true, valid2);
 }

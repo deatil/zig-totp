@@ -17,11 +17,11 @@ pub fn index(data: []const u8, sep: []const u8) ?usize {
 }
 
 pub fn trimLeft(data: []const u8, sep: []const u8) []const u8 {
-    return mem.trimLeft(u8, data, sep);
+    return mem.trimStart(u8, data, sep);
 }
 
 pub fn trimRight(data: []const u8, sep: []const u8) []const u8 {
-    return mem.trimRight(u8, data, sep);
+    return mem.trimEnd(u8, data, sep);
 }
 
 pub const GetLineData = struct {

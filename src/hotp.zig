@@ -1,8 +1,8 @@
 const std = @import("std");
+const Random = std.Random;
 const fmt = std.fmt;
 const ascii = std.ascii;
 const testing = std.testing;
-const random = std.crypto.random;
 const Allocator = std.mem.Allocator;
 
 pub const url = @import("url.zig");
@@ -107,6 +107,9 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         secret = try base32.encode(alloc, opts.secret, false);
     } else {
         var s: []u8 = try alloc.alloc(u8, opts.secret_size);
+        var prng = Random.DefaultPrng.init(1234);
+        const random = prng.random();
+
         random.bytes(s[0..]);
 
         defer alloc.free(s);

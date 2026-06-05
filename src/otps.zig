@@ -302,7 +302,7 @@ pub const Digits = struct {
             }
         }
 
-        try data.writer(alloc).print("{}", .{in});
+        try data.print(alloc, "{}", .{in});
 
         const res = try data.toOwnedSlice(alloc);
         defer alloc.free(res);

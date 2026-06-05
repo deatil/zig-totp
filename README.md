@@ -14,7 +14,7 @@ Because TOTP is standardized and widely deployed, there are many [mobile clients
 
 ### Env
 
- - Zig >= 0.15.1
+ - Zig >= 0.16.0
 
 
 ### Adding zig-totp as a dependency
@@ -58,11 +58,13 @@ const totp = @import("zig-totp");
 const std = @import("std");
 const totp = @import("zig-totp");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     const alloc = std.heap.page_allocator;
 
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-    const n = totp.time.now().utc();
+    const n = totp.time.now(io).utc();
     const passcode = try totp.generateCode(alloc, secret, n);
 
     defer alloc.free(passcode);
@@ -71,7 +73,7 @@ pub fn main() !void {
     // generateCode: 906939
     std.debug.print("generateCode: {s} \n", .{passcode});
 
-    const valid = totp.validate(alloc, passcode, secret);
+    const valid = totp.validate(alloc, io, passcode, secret);
     
     // output: 
     // validate: true
@@ -86,7 +88,9 @@ pub fn main() !void {
 const std = @import("std");
 const totp = @import("zig-totp");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    _ = init;
+
     const alloc = std.heap.page_allocator;
 
     const secret = "test-data";
