@@ -220,42 +220,28 @@ pub const Algorithm = enum {
     pub fn hash(self: Self, alloc: Allocator, msg: []const u8, key: []const u8) ![]u8 {
         switch (self) {
             .SHA1 => {
-                var hmac: [auth_hmac.HmacSha1.mac_length]u8 = undefined;
-
-                var h = auth_hmac.HmacSha1.init(key);
-                h.update(msg);
-                h.final(hmac[0..]);
-
-                return alloc.dupe(u8, hmac[0..]);
+                return Self.hmacSign(alloc, auth_hmac.HmacSha1, msg, key);
             },
             .SHA256 => {
-                var hmac: [auth_hmac.sha2.HmacSha256.mac_length]u8 = undefined;
-
-                var h = auth_hmac.sha2.HmacSha256.init(key);
-                h.update(msg);
-                h.final(hmac[0..]);
-
-                return alloc.dupe(u8, hmac[0..]);
+                return Self.hmacSign(alloc, auth_hmac.sha2.HmacSha256, msg, key);
             },
             .SHA512 => {
-                var hmac: [auth_hmac.sha2.HmacSha512.mac_length]u8 = undefined;
-
-                var h = auth_hmac.sha2.HmacSha512.init(key);
-                h.update(msg);
-                h.final(hmac[0..]);
-
-                return alloc.dupe(u8, hmac[0..]);
+                return Self.hmacSign(alloc, auth_hmac.sha2.HmacSha512, msg, key);
             },
             else => {
-                var hmac: [auth_hmac.HmacMd5.mac_length]u8 = undefined;
-
-                var h = auth_hmac.HmacMd5.init(key);
-                h.update(msg);
-                h.final(hmac[0..]);
-
-                return alloc.dupe(u8, hmac[0..]);
+                return Self.hmacSign(alloc, auth_hmac.HmacMd5, msg, key);
             },
         }
+    }
+
+    fn hmacSign(alloc: Allocator, Hash: anytype, msg: []const u8, key: []const u8) ![]u8 {
+        var hmac: [Hash.mac_length]u8 = undefined;
+
+        var h = Hash.init(key);
+        h.update(msg);
+        h.final(hmac[0..]);
+
+        return alloc.dupe(u8, hmac[0..]);
     }
 };
 
@@ -586,4 +572,8 @@ test "Algorithm" {
     hh.final(hmacs[0..]);
 
     try assertEqual("0194d256ddb7b73fde24b0d3aa407b5e", hmacs[0..]);
+
+    const hd5 = try Algorithm.hmacSign(alloc, auth_hmac.sha2.HmacSha512, msg, key);
+    defer alloc.free(hd5);
+    try assertEqual("868000a7fdc71b2778d9c820b2058ebce87093ea1bcd9df772faf200b71484efaae15a461a0b509c034ace950a64c4330fac3932677fd509a02d588e74c01ff3", hd5);
 }
