@@ -29,6 +29,28 @@ pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const
     });
 }
 
+pub fn validateByUrl(alloc: Allocator, passcode: []const u8, counter: u64, urlStr: []const u8) bool {
+    var key = otps.Key.init(alloc, urlStr) catch return false;
+    defer key.deinit();
+
+    return validateCustom(alloc, passcode, counter, key.secret(), .{
+        .digits = key.digits(),
+        .algorithm = key.algorithm(),
+        .encoder = key.encoder(),
+    }) catch false;
+}
+
+pub fn generateCodeByUrl(alloc: Allocator, urlStr: []const u8, counter: u64) ![]const u8 {
+    var key = try otps.Key.init(alloc, urlStr);
+    defer key.deinit();
+
+    return generateCodeCustom(alloc, key.secret(), counter, .{
+        .digits = key.digits(),
+        .algorithm = key.algorithm(),
+        .encoder = key.encoder(),
+    });
+}
+
 pub const ValidateOpts = struct {
     // Digits as part of the input. Defaults to 6.
     digits: otps.Digits = .Six,
@@ -464,4 +486,19 @@ test "generate 2" {
     defer key9.deinit();
 
     try testing.expectEqual(32, key9.secret().len);
+}
+
+test "generateCode and validate by url" {
+    const alloc = testing.allocator;
+
+    const urlStr = "otpauth://hotp/Example:account_name?issuer=Example&digits=6&secret=I5CVURCHJZBFMR2ZGNKFCT2KKFDUKWSEI5HEEVSHLEZVIUKPJJIQ&algorithm=SHA1";
+    const counter: u64 = 6;
+
+    const passcode2 = try generateCodeByUrl(alloc, urlStr, counter);
+    defer alloc.free(passcode2);
+
+    try testing.expectEqual(true, passcode2.len > 0);
+
+    const valid = validateByUrl(alloc, passcode2, counter, urlStr);
+    try testing.expectEqual(true, valid);
 }
