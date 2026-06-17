@@ -375,12 +375,12 @@ test "Digits" {
 test "Key" {
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
+    const url_str1 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=sha256&digits=8";
 
-    var pu = try Key.init(alloc, urlStr);
+    var pu = try Key.init(alloc, url_str1);
     defer pu.deinit();
 
-    try testing.expectEqualStrings(urlStr, pu.string());
+    try testing.expectEqualStrings(url_str1, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
 
     const issuer = pu.issuer();
@@ -396,11 +396,11 @@ test "Key" {
     const us = pu.urlString();
     defer alloc.free(us);
 
-    try testing.expectEqualStrings(urlStr, us);
+    try testing.expectEqualStrings(url_str1, us);
 
-    const urlStr2 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&encoder=steam";
+    const url_str2 = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&encoder=steam";
 
-    var pu2 = try Key.init(alloc, urlStr2);
+    var pu2 = try Key.init(alloc, url_str2);
     defer pu2.deinit();
 
     try testing.expectEqual(Encoder.Steam, pu2.encoder());
@@ -437,12 +437,12 @@ test "Key" {
 test "Key 2" {
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
+    const url_str = "otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
 
-    var pu = try Key.init(alloc, urlStr);
+    var pu = try Key.init(alloc, url_str);
     defer pu.deinit();
 
-    try testing.expectEqualStrings(urlStr, pu.string());
+    try testing.expectEqualStrings(url_str, pu.string());
     try testing.expectEqualStrings("totp", pu.typ());
 
     const issuer = pu.issuer();
@@ -453,12 +453,12 @@ test "Key 2" {
 
     // ==================
 
-    const urlStr2 = "otpauth://totp?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
+    const url_str2 = "otpauth://totp?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8";
 
-    var pu2 = try Key.init(alloc, urlStr2);
+    var pu2 = try Key.init(alloc, url_str2);
     defer pu2.deinit();
 
-    try testing.expectEqualStrings(urlStr2, pu2.string());
+    try testing.expectEqualStrings(url_str2, pu2.string());
     try testing.expectEqualStrings("totp", pu2.typ());
     try testing.expectEqualStrings("", pu2.issuer());
     try testing.expectEqualStrings("", pu2.accountName());

@@ -29,8 +29,8 @@ pub fn generateCode(alloc: Allocator, secret: []const u8, counter: u64) ![]const
     });
 }
 
-pub fn validateByUrl(alloc: Allocator, passcode: []const u8, counter: u64, urlStr: []const u8) bool {
-    var key = otps.Key.init(alloc, urlStr) catch return false;
+pub fn validateByUrl(alloc: Allocator, passcode: []const u8, counter: u64, url_str: []const u8) bool {
+    var key = otps.Key.init(alloc, url_str) catch return false;
     defer key.deinit();
 
     return validateCustom(alloc, passcode, counter, key.secret(), .{
@@ -40,8 +40,8 @@ pub fn validateByUrl(alloc: Allocator, passcode: []const u8, counter: u64, urlSt
     }) catch false;
 }
 
-pub fn generateCodeByUrl(alloc: Allocator, urlStr: []const u8, counter: u64) ![]const u8 {
-    var key = try otps.Key.init(alloc, urlStr);
+pub fn generateCodeByUrl(alloc: Allocator, url_str: []const u8, counter: u64) ![]const u8 {
+    var key = try otps.Key.init(alloc, url_str);
     defer key.deinit();
 
     return generateCodeCustom(alloc, key.secret(), counter, .{
@@ -491,14 +491,14 @@ test "generate 2" {
 test "generateCode and validate by url" {
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://hotp/Example:account_name?issuer=Example&digits=6&secret=I5CVURCHJZBFMR2ZGNKFCT2KKFDUKWSEI5HEEVSHLEZVIUKPJJIQ&algorithm=SHA1";
+    const url_str = "otpauth://hotp/Example:account_name?issuer=Example&digits=6&secret=I5CVURCHJZBFMR2ZGNKFCT2KKFDUKWSEI5HEEVSHLEZVIUKPJJIQ&algorithm=SHA1";
     const counter: u64 = 6;
 
-    const passcode2 = try generateCodeByUrl(alloc, urlStr, counter);
+    const passcode2 = try generateCodeByUrl(alloc, url_str, counter);
     defer alloc.free(passcode2);
 
     try testing.expectEqual(true, passcode2.len > 0);
 
-    const valid = validateByUrl(alloc, passcode2, counter, urlStr);
+    const valid = validateByUrl(alloc, passcode2, counter, url_str);
     try testing.expectEqual(true, valid);
 }

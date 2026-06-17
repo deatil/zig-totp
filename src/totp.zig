@@ -56,8 +56,8 @@ pub fn generateCodeAt(alloc: Allocator, secret: []const u8, t: time.Time) ![]con
     });
 }
 
-pub fn validateByUrl(alloc: Allocator, io: Io, passcode: []const u8, urlStr: []const u8) bool {
-    var key = otps.Key.init(alloc, urlStr) catch return false;
+pub fn validateByUrl(alloc: Allocator, io: Io, passcode: []const u8, url_str: []const u8) bool {
+    var key = otps.Key.init(alloc, url_str) catch return false;
     defer key.deinit();
 
     return validateCustom(alloc, passcode, key.secret(), time.now(io).utc(), .{
@@ -69,8 +69,8 @@ pub fn validateByUrl(alloc: Allocator, io: Io, passcode: []const u8, urlStr: []c
     }) catch false;
 }
 
-pub fn generateCodeByUrl(alloc: Allocator, io: Io, urlStr: []const u8) ![]const u8 {
-    var key = try otps.Key.init(alloc, urlStr);
+pub fn generateCodeByUrl(alloc: Allocator, io: Io, url_str: []const u8) ![]const u8 {
+    var key = try otps.Key.init(alloc, url_str);
     defer key.deinit();
 
     return generateCodeCustom(alloc, key.secret(), time.now(io).utc(), .{
@@ -82,8 +82,8 @@ pub fn generateCodeByUrl(alloc: Allocator, io: Io, urlStr: []const u8) ![]const 
     });
 }
 
-pub fn validateAtByUrl(alloc: Allocator, passcode: []const u8, urlStr: []const u8, t: time.Time) bool {
-    var key = otps.Key.init(alloc, urlStr) catch return false;
+pub fn validateAtByUrl(alloc: Allocator, passcode: []const u8, url_str: []const u8, t: time.Time) bool {
+    var key = otps.Key.init(alloc, url_str) catch return false;
     defer key.deinit();
 
     return validateCustom(alloc, passcode, key.secret(), t, .{
@@ -95,8 +95,8 @@ pub fn validateAtByUrl(alloc: Allocator, passcode: []const u8, urlStr: []const u
     }) catch false;
 }
 
-pub fn generateCodeAtByUrl(alloc: Allocator, urlStr: []const u8, t: time.Time) ![]const u8 {
-    var key = try otps.Key.init(alloc, urlStr);
+pub fn generateCodeAtByUrl(alloc: Allocator, url_str: []const u8, t: time.Time) ![]const u8 {
+    var key = try otps.Key.init(alloc, url_str);
     defer key.deinit();
 
     return generateCodeCustom(alloc, key.secret(), t, .{
@@ -618,9 +618,9 @@ test "GoogleLowerCaseSecret" {
     const io = testing.io;
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://totp/Google%3Afoo%40example.com?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&issuer=Google";
+    const url_str = "otpauth://totp/Google%3Afoo%40example.com?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&issuer=Google";
 
-    var key = try otps.Key.init(alloc, urlStr);
+    var key = try otps.Key.init(alloc, url_str);
     defer key.deinit();
 
     const sec = key.secret();
@@ -650,9 +650,9 @@ test "SteamSecret" {
     const io = testing.io;
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
+    const url_str = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
 
-    var key = try otps.Key.init(alloc, urlStr);
+    var key = try otps.Key.init(alloc, url_str);
     defer key.deinit();
 
     const sec = key.secret();
@@ -699,23 +699,23 @@ test "generateCode and validate by url" {
     const io = testing.io;
     const alloc = testing.allocator;
 
-    const urlStr = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
+    const url_str = "otpauth://totp/username%20steam:username?secret=qlt6vmy6svfx4bt4rpmisaiyol6hihca&period=30&digits=5&issuer=username%20steam&encoder=steam";
 
     const n = time.now(io).utc();
-    const passcode = try generateCodeAtByUrl(alloc, urlStr, n);
+    const passcode = try generateCodeAtByUrl(alloc, url_str, n);
     defer alloc.free(passcode);
 
     try testing.expectEqual(true, passcode.len > 0);
 
     const t = time.now(io).utc();
-    const valid2 = validateAtByUrl(alloc, passcode, urlStr, t);
+    const valid2 = validateAtByUrl(alloc, passcode, url_str, t);
     try testing.expectEqual(true, valid2);
 
-    const passcode2 = try generateCodeByUrl(alloc, io, urlStr);
+    const passcode2 = try generateCodeByUrl(alloc, io, url_str);
     defer alloc.free(passcode2);
 
     try testing.expectEqual(true, passcode2.len > 0);
 
-    const valid = validateByUrl(alloc, io, passcode2, urlStr);
+    const valid = validateByUrl(alloc, io, passcode2, url_str);
     try testing.expectEqual(true, valid);
 }

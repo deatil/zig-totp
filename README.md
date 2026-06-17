@@ -64,8 +64,9 @@ pub fn main(init: std.process.Init) !void {
     const alloc = std.heap.page_allocator;
 
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-    const n = totp.time.now(io).utc();
-    const passcode = try totp.generateCode(alloc, secret, n);
+    // const n = totp.time.now(io).utc();
+    // const passcode = try totp.generateCodeAt(alloc, secret, n);
+    const passcode = try totp.generateCode(alloc, io, secret);
 
     defer alloc.free(passcode);
 
@@ -73,6 +74,7 @@ pub fn main(init: std.process.Init) !void {
     // generateCode: 906939
     std.debug.print("generateCode: {s} \n", .{passcode});
 
+    // const valid = totp.validateAt(alloc, passcode, secret, n);
     const valid = totp.validate(alloc, io, passcode, secret);
     
     // output: 
