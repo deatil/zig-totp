@@ -60,8 +60,7 @@ const totp = @import("zig-totp");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-
-    const alloc = std.heap.page_allocator;
+    const alloc = init.arena.allocator();
 
     const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     // const n = totp.time.now(io).utc();
@@ -91,9 +90,7 @@ const std = @import("std");
 const totp = @import("zig-totp");
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
-
-    const alloc = std.heap.page_allocator;
+    const alloc = init.arena.allocator();
 
     const secret = "test-data";
 
