@@ -94,6 +94,9 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, counter: u64, secr
     return bytes.eq(passcode, otp_str);
 }
 
+var prng = Random.DefaultPrng.init(123456);
+const DefaultRandom = prng.random();
+
 pub const GenerateOpts = struct {
     // Name of the issuing Organization/Company.
     issuer: []const u8,
@@ -103,6 +106,8 @@ pub const GenerateOpts = struct {
     secret_size: u32 = 10,
     // Secret to store. Defaults to a randomly generated secret of SecretSize.  You should generally leave this empty.
     secret: []const u8 = "",
+    // if use secret_size, random must set.
+    random: Random = DefaultRandom, 
     // Digits to request. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
@@ -129,10 +134,7 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         secret = try base32.encode(alloc, opts.secret, false);
     } else {
         var s: []u8 = try alloc.alloc(u8, opts.secret_size);
-        var prng = Random.DefaultPrng.init(1234);
-        const random = prng.random();
-
-        random.bytes(s[0..]);
+        opts.random.bytes(s[0..]);
 
         defer alloc.free(s);
 
@@ -182,6 +184,10 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
     return otps.Key.init(alloc, url_str);
 }
 
+const TestRandom = (Random.IoSource{
+    .io = testing.io,
+}).interface();
+
 test "generateCode" {
     const alloc = testing.allocator;
 
@@ -228,6 +234,7 @@ test "generate no secret" {
         .secret_size = 8,
         .digits = .Six,
         .algorithm = .SHA1,
+        .random = TestRandom,
     });
     defer key.deinit();
 
@@ -373,6 +380,7 @@ test "generate 2" {
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
         .secret_size = 10,
+        .random = TestRandom,
     });
     defer key.deinit();
 
@@ -424,6 +432,7 @@ test "generate 2" {
         .secret_size = 20,
         .digits = .Six,
         .algorithm = .SHA1,
+        .random = TestRandom,
     });
     defer key6.deinit();
 
@@ -482,6 +491,7 @@ test "generate 2" {
         .issuer = "SnakeOil",
         .account_name = "alice@example.com",
         .secret_size = 20,
+        .random = TestRandom,
     });
     defer key9.deinit();
 

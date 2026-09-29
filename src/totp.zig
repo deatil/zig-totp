@@ -185,6 +185,9 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
     return false;
 }
 
+var prng = Random.DefaultPrng.init(123456);
+const DefaultRandom = prng.random();
+
 pub const GenerateOpts = struct {
     // Name of the issuing Organization/Company.
     issuer: []const u8,
@@ -197,6 +200,8 @@ pub const GenerateOpts = struct {
     // Secret to store. Defaults to a randomly generated secret of SecretSize.
     // You should generally leave this empty.
     secret: []const u8 = "",
+    // if use secret_size, random must set.
+    random: Random = DefaultRandom, 
     // Digits to request. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.
@@ -223,10 +228,7 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         secret = try base32.encode(alloc, opts.secret, false);
     } else {
         var s: []u8 = try alloc.alloc(u8, opts.secret_size);
-        var prng = Random.DefaultPrng.init(1234);
-        const random = prng.random();
-
-        random.bytes(s[0..]);
+        opts.random.bytes(s[0..]);
 
         defer alloc.free(s);
 
@@ -280,6 +282,10 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
 
     return otps.Key.init(alloc, url_str);
 }
+
+const TestRandom = (Random.IoSource{
+    .io = testing.io,
+}).interface();
 
 test "generate" {
     const alloc = testing.allocator;
@@ -551,6 +557,7 @@ test "generate 2" {
         .account_name = "alice@example.com",
         .period = 0,
         .secret_size = 20,
+        .random = TestRandom,
     });
     defer key7.deinit();
 
@@ -608,6 +615,7 @@ test "generate 2" {
         .period = 0,
         .secret_size = 20,
         .digits = .Six,
+        .random = TestRandom,
     });
     defer key10.deinit();
 
