@@ -186,7 +186,7 @@ pub fn validateCustom(alloc: Allocator, passcode: []const u8, secret: []const u8
 }
 
 var prng = Random.DefaultPrng.init(123456);
-const DefaultRandom = prng.random();
+const defaultRandom = prng.random();
 
 pub const GenerateOpts = struct {
     // Name of the issuing Organization/Company.
@@ -201,7 +201,7 @@ pub const GenerateOpts = struct {
     // You should generally leave this empty.
     secret: []const u8 = "",
     // if use secret_size, random must set.
-    random: Random = DefaultRandom, 
+    random: Random = defaultRandom, 
     // Digits to request. Defaults to 6.
     digits: otps.Digits = .Six,
     // Algorithm to use for HMAC. Defaults to SHA1.

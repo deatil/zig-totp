@@ -14,7 +14,7 @@ Because TOTP is standardized and widely deployed, there are many [mobile clients
 
 ### Env
 
- - Zig >= 0.16.0
+ - Zig >= 0.17.0
 
 
 ### Adding zig-totp as a dependency

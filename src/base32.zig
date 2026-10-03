@@ -42,7 +42,7 @@ pub const Encoding = struct {
                 break :blk a;
             },
             .decode_map = blk: {
-                var a = [_]u8{0xFF} ** 256;
+                var a: [256]u8 = @splat(0xFF);
                 for (encoder, 0..) |c, i| {
                     a[@intCast(c)] = @intCast(i);
                 }
@@ -80,7 +80,7 @@ pub const Encoding = struct {
         var src = source;
         var n: usize = 0;
         while (src.len > 0) {
-            var b = [_]u8{0} ** 8;
+            var b: [8]u8 = @splat(0);
             switch (src.len) {
                 1 => {
                     case1(b[0..], src);
@@ -185,7 +185,7 @@ pub const Encoding = struct {
         var dsti: usize = 0;
 
         while (src.len > 0 and !end) {
-            var dbuf = [_]u8{0} ** 8;
+            var dbuf: [8]u8 = @splat(0);
             var dlen: usize = 8;
             var j: usize = 0;
             while (j < 8) {
