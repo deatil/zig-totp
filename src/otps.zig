@@ -171,7 +171,7 @@ pub const Key = struct {
 
     /// return url string
     pub fn urlString(self: *Self) []const u8 {
-        const url_str = fmt.allocPrint(self.alloc, "{f}", .{
+        const url_str = self.alloc.print("{f}", .{
             self.url.fmt(.all),
         }) catch "";
         return url_str;
@@ -184,7 +184,7 @@ pub const Key = struct {
         return switch (component) {
             .raw => |raw| try alloc.dupe(u8, raw),
             .percent_encoded => |percent_encoded| if (std.mem.indexOfScalar(u8, percent_encoded, '%')) |_|
-                try std.fmt.allocPrint(alloc, "{f}", .{std.fmt.alt(component, .formatRaw)})
+                try alloc.print("{f}", .{std.fmt.alt(component, .formatRaw)})
             else
                 try alloc.dupe(u8, percent_encoded),
         };
@@ -266,7 +266,7 @@ pub const Digits = struct {
 
     pub fn string(self: Self, alloc: Allocator) ![]const u8 {
         const len = self.length();
-        return fmt.allocPrint(alloc, "{d}", .{len});
+        return alloc.print("{d}", .{len});
     }
 
     // Length returns the number of characters for this Digits.

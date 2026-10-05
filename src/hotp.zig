@@ -176,7 +176,7 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         .fragment = null,
     };
 
-    const url_str = fmt.allocPrint(alloc, "{f}", .{
+    const url_str = alloc.print("{f}", .{
         uri.fmt(.all),
     }) catch "";
     defer alloc.free(url_str);

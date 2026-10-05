@@ -240,7 +240,7 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
     try v.set("secret", secret);
     try v.set("issuer", opts.issuer);
 
-    const period_str = try fmt.allocPrint(alloc, "{d}", .{opts.period});
+    const period_str = try alloc.print("{d}", .{opts.period});
     defer alloc.free(period_str);
 
     try v.set("period", period_str);
@@ -275,7 +275,7 @@ pub fn generate(alloc: Allocator, opts: GenerateOpts) !otps.Key {
         .fragment = null,
     };
 
-    const url_str = fmt.allocPrint(alloc, "{f}", .{
+    const url_str = alloc.print("{f}", .{
         uri.fmt(.all),
     }) catch "";
     defer alloc.free(url_str);
